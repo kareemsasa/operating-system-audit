@@ -2,6 +2,11 @@
 .venv
 node_modules
 __pycache__
+
+# Build artifacts
 dist/
 output/
-osaudit
+*.exe
+
+# OS junk
+.DS_Store

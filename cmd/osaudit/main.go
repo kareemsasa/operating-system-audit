@@ -59,14 +59,23 @@ func run(args []string) int {
 	if err != nil {
 		fatalf("%v\n", err)
 	}
+	noCommandsMessage := fmt.Sprintf("no commands available for detected OS: %s", detectedOS)
 
 	if len(args) == 0 {
+		if len(commands) == 0 {
+			fmt.Println(noCommandsMessage)
+			return 0
+		}
 		runMenu(commands, detectedOS, repoRoot)
 		return 0
 	}
 
 	switch args[0] {
 	case "list":
+		if len(commands) == 0 {
+			fmt.Println(noCommandsMessage)
+			return 0
+		}
 		printCommandList(commands)
 		return 0
 	case "run":
@@ -151,10 +160,6 @@ func loadCommands(manifestPath, detectedOS string) ([]auditCommand, error) {
 		if commandSupportsOS(cmd, detectedOS) {
 			filtered = append(filtered, cmd)
 		}
-	}
-
-	if len(filtered) == 0 {
-		return nil, fmt.Errorf("no commands available for detected OS: %s", detectedOS)
 	}
 
 	return filtered, nil
@@ -417,7 +422,7 @@ func findCommandByID(commands []auditCommand, id string) (auditCommand, error) {
 
 func printCommandList(commands []auditCommand) {
 	for _, cmd := range commands {
-		fmt.Printf("%s\t%s\n", cmd.ID, cmd.Display)
+		fmt.Printf("%s %s\n", cmd.ID, cmd.Display)
 	}
 }
 
