@@ -1,0 +1,10 @@
+{
+  "commands": [
+    {
+      "id": "cleanup",
+      "os": ["mac"],
+      "display": "Home cleanup audit",
+      "cli": ["mac", "cleanup"]
+    }
+  ]
+}
