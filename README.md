@@ -86,3 +86,5 @@ Run a command with pass-through flags:
 ```bash
 ./dist/osaudit run cleanup -- --ndjson
 ```
+
+Command manifest shape is documented in `cli/commands.schema.json` for editor/CI validation.

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -28,6 +29,14 @@ type auditCommand struct {
 	OS      []string `json:"os"`
 	Display string   `json:"display"`
 	Exec    []string `json:"exec"`
+}
+
+var commandIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+var validManifestOS = map[string]struct{}{
+	"mac":     {},
+	"linux":   {},
+	"windows": {},
 }
 
 func main() {
@@ -133,13 +142,13 @@ func loadCommands(manifestPath, detectedOS string) ([]auditCommand, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("failed to parse manifest: %w", err)
 	}
+	if err := validateManifest(filepath.Dir(filepath.Dir(manifestPath)), m); err != nil {
+		return nil, fmt.Errorf("invalid manifest: %w", err)
+	}
 
 	filtered := make([]auditCommand, 0, len(m.Commands))
 	for _, cmd := range m.Commands {
 		if commandSupportsOS(cmd, detectedOS) {
-			if len(cmd.Exec) == 0 {
-				return nil, fmt.Errorf("invalid command '%s': exec field is required", cmd.ID)
-			}
 			filtered = append(filtered, cmd)
 		}
 	}
@@ -149,6 +158,97 @@ func loadCommands(manifestPath, detectedOS string) ([]auditCommand, error) {
 	}
 
 	return filtered, nil
+}
+
+func validateManifest(repoRoot string, m manifest) error {
+	if len(m.Commands) < 1 {
+		return errors.New("commands must contain at least one entry")
+	}
+
+	seenIDs := make(map[string]int, len(m.Commands))
+
+	for i, cmd := range m.Commands {
+		if err := validateManifestCommand(repoRoot, cmd, i, seenIDs); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateManifestCommand(repoRoot string, cmd auditCommand, index int, seenIDs map[string]int) error {
+	ref := fmt.Sprintf("command[%d]", index)
+	id := strings.TrimSpace(cmd.ID)
+	if id == "" {
+		return fmt.Errorf("%s: id is required", ref)
+	}
+	ref = fmt.Sprintf("%s (%q)", ref, id)
+
+	if !commandIDPattern.MatchString(id) {
+		return fmt.Errorf("%s: id must match %q", ref, commandIDPattern.String())
+	}
+	if firstIndex, exists := seenIDs[id]; exists {
+		return fmt.Errorf("%s: duplicate id %q (already defined at command[%d])", ref, id, firstIndex)
+	}
+	seenIDs[id] = index
+
+	if strings.TrimSpace(cmd.Display) == "" {
+		return fmt.Errorf("%s: display is required", ref)
+	}
+	if err := validateManifestOSValues(ref, cmd.OS); err != nil {
+		return err
+	}
+	if err := validateManifestExecPath(repoRoot, ref, cmd.Exec); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateManifestOSValues(ref string, values []string) error {
+	if len(values) < 1 {
+		return fmt.Errorf("%s: os must contain at least one value", ref)
+	}
+	for _, osName := range values {
+		if _, ok := validManifestOS[osName]; !ok {
+			return fmt.Errorf("%s: os contains unsupported value %q (allowed: mac, linux, windows)", ref, osName)
+		}
+	}
+	return nil
+}
+
+func validateManifestExecPath(repoRoot, ref string, execValues []string) error {
+	if len(execValues) < 1 {
+		return fmt.Errorf("%s: exec must contain at least one value", ref)
+	}
+	execPath := strings.TrimSpace(execValues[0])
+	if execPath == "" {
+		return fmt.Errorf("%s: exec[0] is required", ref)
+	}
+	if strings.HasPrefix(execPath, "-") {
+		return fmt.Errorf("%s: exec[0] must not start with '-': %q", ref, execPath)
+	}
+
+	absoluteExecPath := filepath.Join(repoRoot, execPath)
+	absoluteExecPath, err := filepath.Abs(absoluteExecPath)
+	if err != nil {
+		return fmt.Errorf("%s: failed to resolve absolute path for exec[0] %q: %w", ref, execPath, err)
+	}
+	info, err := os.Stat(absoluteExecPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%s: exec[0] target does not exist: %s", ref, absoluteExecPath)
+		}
+		return fmt.Errorf("%s: failed to stat exec[0] target %s: %w", ref, absoluteExecPath, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s: exec[0] target is a directory, expected file: %s", ref, absoluteExecPath)
+	}
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
+		return fmt.Errorf("%s: exec[0] is not executable: %s (try: chmod +x %s)", ref, absoluteExecPath, absoluteExecPath)
+	}
+
+	return nil
 }
 
 func commandSupportsOS(cmd auditCommand, detectedOS string) bool {

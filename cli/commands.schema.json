@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/operating-system-audit/cli/commands.schema.json",
+  "title": "OSAudit Command Manifest",
+  "description": "Defines command entries used by osaudit to list and run audits.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "commands"
+  ],
+  "properties": {
+    "commands": {
+      "description": "List of commands that can be shown and dispatched by the CLI.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "os",
+          "display",
+          "exec"
+        ],
+        "properties": {
+          "id": {
+            "description": "Stable command identifier used with `osaudit run <id>`.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "os": {
+            "description": "Operating systems supported by this command.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "mac",
+                "linux",
+                "windows"
+              ]
+            }
+          },
+          "display": {
+            "description": "Human-readable label shown in interactive and list views.",
+            "type": "string",
+            "minLength": 1
+          },
+          "exec": {
+            "description": "Executable path and optional default arguments. First element is the executable path relative to repo root.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}
