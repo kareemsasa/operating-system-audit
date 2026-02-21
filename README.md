@@ -62,3 +62,27 @@ Clone the repository:
 git clone https://github.com/kareemsasa/operating-system-audit.git
 cd operating-system-audit
 ```
+
+Build the CLI:
+
+```bash
+go build -o dist/osaudit ./cmd/osaudit
+```
+
+Run interactively:
+
+```bash
+./dist/osaudit
+```
+
+List available commands for the detected OS:
+
+```bash
+./dist/osaudit list
+```
+
+Run a command with pass-through flags:
+
+```bash
+./dist/osaudit run cleanup -- --ndjson
+```

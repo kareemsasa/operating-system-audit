@@ -4,7 +4,7 @@
       "id": "cleanup",
       "os": ["mac"],
       "display": "Home cleanup audit",
-      "cli": ["mac", "cleanup"]
+      "exec": ["audit/mac/home-cleanup-audit.sh"]
     }
   ]
 }
