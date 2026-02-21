@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+
+      - name: Check go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code
+
+      - name: Build osaudit
+        run: |
+          mkdir -p dist
+          go build -o dist/osaudit ./cmd/osaudit
+
+      - name: Bash syntax checks
+        shell: bash
+        run: |
+          bash -n audit/mac/home-cleanup-audit.sh
+
+      - name: Check script executable bit
+        run: |
+          test -x audit/mac/home-cleanup-audit.sh
+
+      - name: Smoke tests
+        run: |
+          ./dist/osaudit list
+          if ./dist/osaudit list | awk '{print $1}' | grep -qx cleanup; then
+            ./dist/osaudit run cleanup -- --help
+          else
+            echo "cleanup not available on this OS; skipping run smoke."
+          fi
+
+  mac-smoke:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+
+      - name: Build osaudit
+        run: |
+          mkdir -p dist
+          go build -o dist/osaudit ./cmd/osaudit
+
+      - name: Smoke tests
+        run: |
+          ./dist/osaudit list
+          ./dist/osaudit run cleanup -- --help

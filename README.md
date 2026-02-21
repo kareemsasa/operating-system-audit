@@ -88,3 +88,8 @@ Run a command with pass-through flags:
 ```
 
 Command manifest shape is documented in `cli/commands.schema.json` for editor/CI validation.
+
+## CI
+
+GitHub Actions runs a fast CI workflow on pushes and pull requests.
+It verifies `go build` for `cmd/osaudit`, checks Bash script syntax, and runs lightweight CLI smoke tests (`list` and `--help`) without deep scans.
