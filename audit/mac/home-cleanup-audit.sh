@@ -20,6 +20,9 @@ WRITE_NDJSON=false
 ROOTS_OVERRIDE_RAW=""
 REDACT_PATHS_MODE="auto"
 REDACT_PATHS=false
+HEATMAP=false
+HEATMAP_EMIT_TOPN=100
+HEATMAP_RENDER_TOPN=50
 declare -a METADATA_NOTES=()
 declare -a NDJSON_PENDING_NOTES=()
 
@@ -35,6 +38,9 @@ Options:
   --old-days <int>       Stale file threshold in days (default: 180)
   --deep                 Scan full home dir (pruned for Library/.Trash/.git/node_modules)
   --ndjson               Also write a compact NDJSON summary file
+  --heatmap              Render HTML heatmaps (auto-enables NDJSON)
+  --heatmap-emit-topn N  NDJSON top_paths/top_items emit count (default: 100)
+  --heatmap-render-topn N Render count passed to HTML renderer (default: 50)
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
   --no-color             Disable ANSI colors in terminal output
@@ -92,6 +98,26 @@ while (($# > 0)); do
             WRITE_NDJSON=true
             shift
             ;;
+        --heatmap)
+            HEATMAP=true
+            shift
+            ;;
+        --heatmap-emit-topn)
+            if (($# < 2)); then
+                echo "Error: --heatmap-emit-topn requires an integer" >&2
+                exit 1
+            fi
+            HEATMAP_EMIT_TOPN="$2"
+            shift 2
+            ;;
+        --heatmap-render-topn)
+            if (($# < 2)); then
+                echo "Error: --heatmap-render-topn requires an integer" >&2
+                exit 1
+            fi
+            HEATMAP_RENDER_TOPN="$2"
+            shift 2
+            ;;
         --redact-paths)
             REDACT_PATHS_MODE="on"
             shift
@@ -126,6 +152,16 @@ if [[ ! "$OLD_FILE_DAYS" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
+if [[ ! "$HEATMAP_EMIT_TOPN" =~ ^[0-9]+$ ]] || (( HEATMAP_EMIT_TOPN <= 0 )); then
+    echo "Error: --heatmap-emit-topn must be a positive integer" >&2
+    exit 1
+fi
+
+if [[ ! "$HEATMAP_RENDER_TOPN" =~ ^[0-9]+$ ]] || (( HEATMAP_RENDER_TOPN <= 0 )); then
+    echo "Error: --heatmap-render-topn must be a positive integer" >&2
+    exit 1
+fi
+
 TIMESTAMP_FOR_FILENAME=$(date +"%Y%m%d-%H%M%S")
 ISO_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 HOSTNAME_VAL=$(hostname 2>/dev/null || echo "unknown")
@@ -146,6 +182,10 @@ if [ -z "${RUN_ID:-}" ] && command -v uuidgen >/dev/null 2>&1; then
 fi
 if [ -z "${RUN_ID:-}" ]; then
     RUN_ID="${TIMESTAMP_FOR_FILENAME}-$$"
+fi
+
+if $HEATMAP && ! $WRITE_NDJSON; then
+    WRITE_NDJSON=true
 fi
 
 if $WRITE_NDJSON; then
@@ -225,6 +265,8 @@ TOP_NODE_MODULES_FILE="$REPORT_DIR/.cleanup-audit-top-node-modules-$TIMESTAMP_FO
 : > "$TOP_NODE_MODULES_FILE"
 TOP_DOCUMENTS_FOLDERS_FILE="$REPORT_DIR/.cleanup-audit-top-doc-folders-$TIMESTAMP_FOR_FILENAME.tsv"
 : > "$TOP_DOCUMENTS_FOLDERS_FILE"
+TOP_PATHS_FILE="$REPORT_DIR/.cleanup-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv"
+: > "$TOP_PATHS_FILE"
 
 NDJSON_FILE=""
 if $WRITE_NDJSON; then
@@ -438,6 +480,14 @@ emit_large_files_bytes() {
     done | sort -nr -k1,1 -k2,2
 }
 
+sanitize_run_id_for_filename() {
+    local input="$1"
+    local sanitized
+    sanitized=$(printf '%s' "$input" | tr -c '[:alnum:]_.-' '_' | sed 's/^[._]*//; s/[._]*$//')
+    [ -n "$sanitized" ] || sanitized="run"
+    echo "$sanitized"
+}
+
 ds_count=0
 dmg_count=0
 pkg_count=0
@@ -457,6 +507,8 @@ old_dl_bytes=0
 dl_file_count=0
 trash_count=0
 home_bytes=0
+HEATMAP_TREEMAP_FILE=""
+HEATMAP_TIMING_FILE=""
 
 if [ -n "$NDJSON_FILE" ]; then
     : > "$NDJSON_FILE"
@@ -487,7 +539,12 @@ while IFS=$'\t' read -r size folder; do
     folder_name=$(basename "$folder")
     echo -e "  ${CYAN}$folder_name${NC}: $size"
     echo "| \`$folder_name\` | $size |" >> "$REPORT_FILE"
+    folder_bytes=$(dir_bytes "$folder")
+    folder_bytes=${folder_bytes:-0}
+    folder_ndjson_path=$(redact_path_for_ndjson "$folder")
+    printf '%s\t%s\n' "$folder_bytes" "$folder_ndjson_path" >> "$TOP_PATHS_FILE"
 done < <(du -sh "$HOME_DIR"/*/ 2>/dev/null | sort -hr | sed -n '1,20p' || true)
+emit_top_items_ndjson "top_paths" "$TOP_PATHS_FILE" "$HEATMAP_EMIT_TOPN"
 
 # Total home dir size
 total_size=$(du -sh "$HOME_DIR" 2>/dev/null | cut -f1) || true
@@ -897,6 +954,24 @@ if [ -n "$NDJSON_FILE" ]; then
     emit_top_items_ndjson "top_documents_folders" "$TOP_DOCUMENTS_FOLDERS_FILE" 10
 fi
 
+if $HEATMAP && [ -n "$NDJSON_FILE" ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"python3_missing_heatmaps_skipped\"}"
+    else
+        if python3 "$(dirname "$0")/render_heatmaps.py" --ndjson "$NDJSON_FILE" --outdir "$REPORT_DIR" --render-topn "$HEATMAP_RENDER_TOPN"; then
+            run_id_safe=$(sanitize_run_id_for_filename "$RUN_ID")
+            candidate_treemap="$REPORT_DIR/heatmap-treemap-${run_id_safe}.html"
+            candidate_timing="$REPORT_DIR/heatmap-timing-${run_id_safe}.html"
+            if [ -f "$candidate_treemap" ] && [ -f "$candidate_timing" ]; then
+                HEATMAP_TREEMAP_FILE="$candidate_treemap"
+                HEATMAP_TIMING_FILE="$candidate_timing"
+            fi
+        else
+            append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"heatmap_render_failed\"}"
+        fi
+    fi
+fi
+
 # =============================================================================
 # 10. SUGGESTED ORGANIZATION STRUCTURE
 # =============================================================================
@@ -942,6 +1017,16 @@ Based on the audit above, here's a recommended folder structure for your home di
 6. **Ongoing habit:** Process Downloads weekly, keep Desktop under 10 items
 EOF
 
+if [ -n "$HEATMAP_TREEMAP_FILE" ] && [ -n "$HEATMAP_TIMING_FILE" ]; then
+    cat >> "$REPORT_FILE" << EOF
+
+## 🗺️ Visualizations
+- Heatmaps are best-effort artifacts and may be skipped if rendering prerequisites fail.
+- Treemap heatmap: \`$HEATMAP_TREEMAP_FILE\`
+- Timing heatmap: \`$HEATMAP_TIMING_FILE\`
+EOF
+fi
+
 # =============================================================================
 # SUMMARY
 # =============================================================================
@@ -961,7 +1046,7 @@ if [ -f "$SOFT_FAILURE_LOG" ]; then
     soft_failures=$(wc -l < "$SOFT_FAILURE_LOG" | tr -d ' ' || true)
     soft_failures=${soft_failures:-0}
 fi
-rm -f "$SOFT_FAILURE_LOG" "$TOP_NODE_MODULES_FILE" "$TOP_DOCUMENTS_FOLDERS_FILE" || true
+rm -f "$SOFT_FAILURE_LOG" "$TOP_NODE_MODULES_FILE" "$TOP_DOCUMENTS_FOLDERS_FILE" "$TOP_PATHS_FILE" || true
 if (( soft_failures > 0 )); then
     echo -e "Soft probe warnings encountered: ${YELLOW}$soft_failures${NC}"
     echo "- **Soft probe warnings:** $soft_failures" >> "$REPORT_FILE"
