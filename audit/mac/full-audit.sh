@@ -9,7 +9,7 @@ export LC_ALL=C
 
 # --- Defaults / Configuration ---
 source "$(dirname "$0")/lib/init.sh"
-audit_set_defaults_if_unset "full-audit" "full-audit"
+audit_set_defaults_if_unset "full-audit"
 
 LARGE_FILE_THRESHOLD_MB="${LARGE_FILE_THRESHOLD_MB:-100}"
 OLD_FILE_DAYS="${OLD_FILE_DAYS:-180}"

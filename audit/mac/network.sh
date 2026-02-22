@@ -24,7 +24,7 @@ EOF
 
 network_set_defaults_if_unset() {
     source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
-    audit_set_defaults_if_unset "network-audit" "network-audit"
+    audit_set_defaults_if_unset "network-audit"
 }
 
 network_parse_args() {
@@ -33,37 +33,8 @@ network_parse_args() {
 }
 
 network_validate_and_resolve_paths() {
-    if $WRITE_NDJSON; then
-        case "$REDACT_PATHS_MODE" in
-            on) REDACT_PATHS=true ;;
-            off) REDACT_PATHS=false ;;
-            auto) REDACT_PATHS=true ;;
-        esac
-    fi
-
-    if [ -n "$OUTPUT_FILE" ]; then
-        REPORT_FILE="$OUTPUT_FILE"
-        REPORT_DIR=$(dirname "$REPORT_FILE")
-    else
-        REPORT_FILE="${REPORT_FILE:-$REPORT_DIR/network-audit-$TIMESTAMP_FOR_FILENAME.md}"
-    fi
-
-    NDJSON_FILE="${NDJSON_FILE:-}"
-    if $WRITE_NDJSON && [ -z "$NDJSON_FILE" ]; then
-        report_base="${REPORT_FILE%.*}"
-        if [ "$report_base" = "$REPORT_FILE" ]; then
-            NDJSON_FILE="${REPORT_FILE}.ndjson"
-        else
-            NDJSON_FILE="${report_base}.ndjson"
-        fi
-    fi
-
-    if $WRITE_NDJSON && ! command -v python3 >/dev/null 2>&1; then
-        echo "Warning: --ndjson requested but python3 is unavailable; disabling NDJSON output." >&2
-        WRITE_NDJSON=false
-        REDACT_PATHS=false
-        NDJSON_FILE=""
-    fi
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
+    audit_resolve_output_paths "network-audit"
 }
 
 network_prepare_files_and_common() {

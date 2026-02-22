@@ -10,10 +10,10 @@ fi
 _AUDIT_INIT_SH_LOADED=1
 
 # Sets common audit defaults. Call before parse_args.
-# Usage: audit_set_defaults_if_unset <module_name> <default_report_dir>
-# Example: audit_set_defaults_if_unset "execution-audit" "execution-audit"
+# Usage: audit_set_defaults_if_unset <default_report_dir>
+# Example: audit_set_defaults_if_unset "execution-audit"
 audit_set_defaults_if_unset() {
-    local _default_report_dir="${2:-}"
+    local _default_report_dir="${1:-}"
     [[ -n "$_default_report_dir" ]] || _default_report_dir="audit"
 
     HOME_DIR="${HOME_DIR:-$HOME}"
@@ -52,15 +52,24 @@ audit_set_defaults_if_unset() {
 # Usage: audit_parse_args <module_name> <usage_func> "$@"
 # Example: audit_parse_args "execution" execution_usage "$@"
 audit_parse_args() {
+    local _module="${1:-}"
     local _usage_func="${2:-}"
     [[ -n "$_usage_func" ]] || _usage_func="usage"
     shift 2
+
+    _err() {
+        if [[ -n "$_module" ]]; then
+            echo "Error [$_module]: $*" >&2
+        else
+            echo "Error: $*" >&2
+        fi
+    }
 
     while (($# > 0)); do
         case "$1" in
             --report-dir)
                 if (($# < 2)); then
-                    echo "Error: --report-dir requires a path" >&2
+                    _err "--report-dir requires a path"
                     "$_usage_func"
                     exit 1
                 fi
@@ -69,7 +78,7 @@ audit_parse_args() {
                 ;;
             --output)
                 if (($# < 2)); then
-                    echo "Error: --output requires a path" >&2
+                    _err "--output requires a path"
                     "$_usage_func"
                     exit 1
                 fi
@@ -97,10 +106,50 @@ audit_parse_args() {
                 exit 0
                 ;;
             *)
-                echo "Error: Unknown argument '$1'" >&2
+                _err "Unknown argument '$1'"
                 "$_usage_func"
                 exit 1
                 ;;
         esac
     done
+}
+
+# Resolves REPORT_FILE, REPORT_DIR, NDJSON_FILE, REDACT_PATHS. Call after parse_args.
+# Handles NDJSON/redact-paths logic and python3 availability check.
+# Usage: audit_resolve_output_paths <report_suffix>
+# Example: audit_resolve_output_paths "config-audit"
+audit_resolve_output_paths() {
+    local report_suffix="${1:-audit}"
+
+    if $WRITE_NDJSON; then
+        case "$REDACT_PATHS_MODE" in
+            on) REDACT_PATHS=true ;;
+            off) REDACT_PATHS=false ;;
+            auto) REDACT_PATHS=true ;;
+        esac
+    fi
+
+    if [ -n "$OUTPUT_FILE" ]; then
+        REPORT_FILE="$OUTPUT_FILE"
+        REPORT_DIR=$(dirname "$REPORT_FILE")
+    else
+        REPORT_FILE="${REPORT_FILE:-$REPORT_DIR/${report_suffix}-$TIMESTAMP_FOR_FILENAME.md}"
+    fi
+
+    NDJSON_FILE="${NDJSON_FILE:-}"
+    if $WRITE_NDJSON && [ -z "$NDJSON_FILE" ]; then
+        report_base="${REPORT_FILE%.*}"
+        if [ "$report_base" = "$REPORT_FILE" ]; then
+            NDJSON_FILE="${REPORT_FILE}.ndjson"
+        else
+            NDJSON_FILE="${report_base}.ndjson"
+        fi
+    fi
+
+    if $WRITE_NDJSON && ! command -v python3 >/dev/null 2>&1; then
+        echo "Warning: --ndjson requested but python3 is unavailable; disabling NDJSON output." >&2
+        WRITE_NDJSON=false
+        REDACT_PATHS=false
+        NDJSON_FILE=""
+    fi
 }
