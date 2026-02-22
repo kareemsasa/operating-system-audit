@@ -1,0 +1,781 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Mac Storage Audit (sections 1-9 from cleanup audit)
+# Conservative mode — reports only, moves/deletes NOTHING
+# =============================================================================
+
+set -euo pipefail
+export LC_ALL=C
+
+storage_usage() {
+    cat << EOF
+Usage: $(basename "${BASH_SOURCE[0]}") [options]
+
+Options:
+  --report-dir <path>    Output directory for Markdown report
+  --output <path>        Exact Markdown output file path
+  --roots <paths>        Comma-separated scan roots (overrides defaults/deep)
+  --threshold-mb <int>   Large file threshold in MB (default: 100)
+  --old-days <int>       Stale file threshold in days (default: 180)
+  --deep                 Scan full home dir (pruned for Library/.Trash/.git/node_modules)
+  --ndjson               Also write a compact NDJSON summary file
+  --heatmap-emit-topn N  NDJSON top_paths/top_items emit count (default: 100)
+  --redact-paths         Redact NDJSON paths (default: on when --ndjson)
+  --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --no-color             Disable ANSI colors in terminal output
+  -h, --help             Show this help and exit
+EOF
+}
+
+storage_set_defaults_if_unset() {
+    HOME_DIR="${HOME_DIR:-$HOME}"
+    DEFAULT_REPORT_DIR="${DEFAULT_REPORT_DIR:-$(pwd)/output/cleanup-audit}"
+    REPORT_DIR="${REPORT_DIR:-$DEFAULT_REPORT_DIR}"
+    LARGE_FILE_THRESHOLD_MB="${LARGE_FILE_THRESHOLD_MB:-100}"
+    OLD_FILE_DAYS="${OLD_FILE_DAYS:-180}"
+    DEEP_SCAN="${DEEP_SCAN:-false}"
+    NO_COLOR="${NO_COLOR:-false}"
+    OUTPUT_FILE="${OUTPUT_FILE:-}"
+    WRITE_NDJSON="${WRITE_NDJSON:-false}"
+    ROOTS_OVERRIDE_RAW="${ROOTS_OVERRIDE_RAW:-}"
+    REDACT_PATHS_MODE="${REDACT_PATHS_MODE:-auto}"
+    REDACT_PATHS="${REDACT_PATHS:-false}"
+    HEATMAP_EMIT_TOPN="${HEATMAP_EMIT_TOPN:-100}"
+
+    TIMESTAMP_FOR_FILENAME="${TIMESTAMP_FOR_FILENAME:-$(date +"%Y%m%d-%H%M%S")}"
+    ISO_TIMESTAMP="${ISO_TIMESTAMP:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
+    HOSTNAME_VAL="${HOSTNAME_VAL:-$(hostname 2>/dev/null || echo "unknown")}"
+    CURRENT_USER="${CURRENT_USER:-$(id -un 2>/dev/null || echo "${USER:-unknown}")}"
+    if [[ -z "${OS_VERSION:-}" ]]; then
+        if command -v sw_vers >/dev/null 2>&1; then
+            OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
+        else
+            OS_VERSION="unknown"
+        fi
+    fi
+    KERNEL_INFO="${KERNEL_INFO:-$(uname -a 2>/dev/null || echo "unknown")}"
+    if [[ -z "${RUN_ID:-}" ]] && command -v python3 >/dev/null 2>&1; then
+        RUN_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || true)
+    fi
+    if [[ -z "${RUN_ID:-}" ]] && command -v uuidgen >/dev/null 2>&1; then
+        RUN_ID=$(uuidgen 2>/dev/null || true)
+    fi
+    if [[ -z "${RUN_ID:-}" ]]; then
+        RUN_ID="${TIMESTAMP_FOR_FILENAME}-$$"
+    fi
+
+    if [[ -z "${METADATA_NOTES+x}" ]]; then
+        METADATA_NOTES=()
+    fi
+    if [[ -z "${NDJSON_PENDING_NOTES+x}" ]]; then
+        NDJSON_PENDING_NOTES=()
+    fi
+}
+
+storage_parse_args() {
+    while (($# > 0)); do
+        case "$1" in
+            --report-dir)
+                if (($# < 2)); then
+                    echo "Error: --report-dir requires a path" >&2
+                    exit 1
+                fi
+                REPORT_DIR="$2"
+                shift 2
+                ;;
+            --output)
+                if (($# < 2)); then
+                    echo "Error: --output requires a path" >&2
+                    exit 1
+                fi
+                OUTPUT_FILE="$2"
+                shift 2
+                ;;
+            --roots)
+                if (($# < 2)); then
+                    echo "Error: --roots requires a comma-separated path list" >&2
+                    exit 1
+                fi
+                ROOTS_OVERRIDE_RAW="$2"
+                shift 2
+                ;;
+            --threshold-mb)
+                if (($# < 2)); then
+                    echo "Error: --threshold-mb requires an integer" >&2
+                    exit 1
+                fi
+                LARGE_FILE_THRESHOLD_MB="$2"
+                shift 2
+                ;;
+            --old-days)
+                if (($# < 2)); then
+                    echo "Error: --old-days requires an integer" >&2
+                    exit 1
+                fi
+                OLD_FILE_DAYS="$2"
+                shift 2
+                ;;
+            --deep)
+                DEEP_SCAN=true
+                shift
+                ;;
+            --ndjson)
+                WRITE_NDJSON=true
+                shift
+                ;;
+            --heatmap-emit-topn)
+                if (($# < 2)); then
+                    echo "Error: --heatmap-emit-topn requires an integer" >&2
+                    exit 1
+                fi
+                HEATMAP_EMIT_TOPN="$2"
+                shift 2
+                ;;
+            --redact-paths)
+                REDACT_PATHS_MODE="on"
+                shift
+                ;;
+            --no-redact-paths)
+                REDACT_PATHS_MODE="off"
+                shift
+                ;;
+            --no-color)
+                NO_COLOR=true
+                shift
+                ;;
+            -h|--help)
+                storage_usage
+                exit 0
+                ;;
+            *)
+                echo "Error: Unknown argument '$1'" >&2
+                storage_usage
+                exit 1
+                ;;
+        esac
+    done
+}
+
+storage_validate_and_resolve_paths() {
+    if [[ ! "$LARGE_FILE_THRESHOLD_MB" =~ ^[0-9]+$ ]]; then
+        echo "Error: --threshold-mb must be a non-negative integer" >&2
+        exit 1
+    fi
+
+    if [[ ! "$OLD_FILE_DAYS" =~ ^[0-9]+$ ]]; then
+        echo "Error: --old-days must be a non-negative integer" >&2
+        exit 1
+    fi
+
+    if [[ ! "$HEATMAP_EMIT_TOPN" =~ ^[0-9]+$ ]] || (( HEATMAP_EMIT_TOPN <= 0 )); then
+        echo "Error: --heatmap-emit-topn must be a positive integer" >&2
+        exit 1
+    fi
+
+    if $WRITE_NDJSON; then
+        case "$REDACT_PATHS_MODE" in
+            on) REDACT_PATHS=true ;;
+            off) REDACT_PATHS=false ;;
+            auto) REDACT_PATHS=true ;;
+        esac
+    fi
+
+    if [ -n "$OUTPUT_FILE" ]; then
+        REPORT_FILE="$OUTPUT_FILE"
+        REPORT_DIR=$(dirname "$REPORT_FILE")
+    else
+        REPORT_FILE="${REPORT_FILE:-$REPORT_DIR/cleanup-audit-$TIMESTAMP_FOR_FILENAME.md}"
+    fi
+
+    NDJSON_FILE="${NDJSON_FILE:-}"
+    if $WRITE_NDJSON && [ -z "$NDJSON_FILE" ]; then
+        report_base="${REPORT_FILE%.*}"
+        if [ "$report_base" = "$REPORT_FILE" ]; then
+            NDJSON_FILE="${REPORT_FILE}.ndjson"
+        else
+            NDJSON_FILE="${report_base}.ndjson"
+        fi
+    fi
+
+    if $WRITE_NDJSON && ! command -v python3 >/dev/null 2>&1; then
+        echo "Warning: --ndjson requested but python3 is unavailable; disabling NDJSON output." >&2
+        METADATA_NOTES+=("NDJSON disabled because python3 is unavailable")
+        WRITE_NDJSON=false
+        REDACT_PATHS=false
+        NDJSON_FILE=""
+    fi
+}
+
+storage_build_scan_roots() {
+    SCAN_ROOTS=()
+    if $DEEP_SCAN; then
+        SCAN_ROOTS=("$HOME_DIR")
+    else
+        SCAN_ROOTS=("$HOME_DIR/Downloads" "$HOME_DIR/Desktop" "$HOME_DIR/Documents")
+    fi
+
+    if [ -n "$ROOTS_OVERRIDE_RAW" ]; then
+        SCAN_ROOTS=()
+        declare -a requested_roots=()
+        IFS=',' read -r -a requested_roots <<< "$ROOTS_OVERRIDE_RAW"
+        for root in "${requested_roots[@]+"${requested_roots[@]}"}"; do
+            trimmed_root=$(echo "$root" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            [ -n "$trimmed_root" ] || continue
+            if [ -e "$trimmed_root" ]; then
+                SCAN_ROOTS+=("$trimmed_root")
+            else
+                note_msg="Skipping missing root: $trimmed_root"
+                METADATA_NOTES+=("$note_msg")
+                NDJSON_PENDING_NOTES+=("$note_msg")
+            fi
+        done
+        if ((${#SCAN_ROOTS[@]} == 0)); then
+            note_msg="No valid scan roots from --roots; scoped scans will return no matches"
+            METADATA_NOTES+=("$note_msg")
+            NDJSON_PENDING_NOTES+=("$note_msg")
+        fi
+    fi
+}
+
+storage_prepare_files_and_common() {
+    mkdir -p "$REPORT_DIR"
+    SOFT_FAILURE_LOG="${SOFT_FAILURE_LOG:-$REPORT_DIR/.cleanup-audit-soft-failures-$TIMESTAMP_FOR_FILENAME.log}"
+    : > "$SOFT_FAILURE_LOG"
+    TOP_NODE_MODULES_FILE="${TOP_NODE_MODULES_FILE:-$REPORT_DIR/.cleanup-audit-top-node-modules-$TIMESTAMP_FOR_FILENAME.tsv}"
+    : > "$TOP_NODE_MODULES_FILE"
+    TOP_DOCUMENTS_FOLDERS_FILE="${TOP_DOCUMENTS_FOLDERS_FILE:-$REPORT_DIR/.cleanup-audit-top-doc-folders-$TIMESTAMP_FOR_FILENAME.tsv}"
+    : > "$TOP_DOCUMENTS_FOLDERS_FILE"
+    TOP_PATHS_FILE="${TOP_PATHS_FILE:-$REPORT_DIR/.cleanup-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv}"
+    : > "$TOP_PATHS_FILE"
+
+    # Set shared variables before sourcing common library.
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+}
+
+storage_write_report_header_if_needed() {
+    if [[ "${STORAGE_HEADER_READY:-false}" == "true" ]]; then
+        return 0
+    fi
+    cat > "$REPORT_FILE" << EOF
+# 🧹 Mac Home Directory Cleanup Audit
+**Generated:** $(date "+%B %d, %Y at %I:%M %p")
+**Home Directory:** $HOME_DIR
+**Mode:** Conservative (report only — nothing moved or deleted)
+
+## Metadata
+- **Timestamp (ISO-8601):** $ISO_TIMESTAMP
+- **Run ID:** $RUN_ID
+- **Hostname:** $HOSTNAME_VAL
+- **Current user:** $CURRENT_USER
+- **macOS product version:** $OS_VERSION
+- **Kernel:** \`$KERNEL_INFO\`
+EOF
+    for note in "${METADATA_NOTES[@]+"${METADATA_NOTES[@]}"}"; do
+        echo "- **Note:** $note" >> "$REPORT_FILE"
+    done
+    echo "" >> "$REPORT_FILE"
+    echo "---" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    STORAGE_HEADER_READY=true
+}
+
+storage_init_ndjson_if_needed() {
+    if [ -z "$NDJSON_FILE" ]; then
+        return 0
+    fi
+    if [[ "${STORAGE_NDJSON_INITIALIZED:-false}" == "true" ]]; then
+        return 0
+    fi
+    : > "$NDJSON_FILE"
+    scan_mode="scoped"
+    if $DEEP_SCAN && [ -z "$ROOTS_OVERRIDE_RAW" ]; then
+        scan_mode="deep"
+    fi
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"home-cleanup-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"scan\",\"run_id\":$(json_escape "$RUN_ID"),\"mode\":$(json_escape "$scan_mode"),\"threshold_mb\":$LARGE_FILE_THRESHOLD_MB,\"old_days\":$OLD_FILE_DAYS,\"redact_paths\":$([ "$REDACT_PATHS" = true ] && echo true || echo false)}"
+    for note in "${NDJSON_PENDING_NOTES[@]+"${NDJSON_PENDING_NOTES[@]}"}"; do
+        append_ndjson_line "{\"type\":\"note\",\"run_id\":$(json_escape "$RUN_ID"),\"message\":$(json_escape "$note")}"
+    done
+    STORAGE_NDJSON_INITIALIZED=true
+}
+
+scoped_find_pruned() {
+    if [ -z "$ROOTS_OVERRIDE_RAW" ] && $DEEP_SCAN; then
+        find "$HOME_DIR" \
+            -type d \( -path "$HOME_DIR/Library" -o -path "$HOME_DIR/.Trash" -o -name "node_modules" -o -name ".git" \) -prune -o \
+            "$@" -print 2>/dev/null || true
+        return
+    fi
+
+    local root
+    for root in "${SCAN_ROOTS[@]+"${SCAN_ROOTS[@]}"}"; do
+        [ -e "$root" ] || continue
+        find "$root" \
+            -type d \( -name "node_modules" -o -name ".git" \) -prune -o \
+            "$@" -print 2>/dev/null || true
+    done
+}
+
+home_find_excluding() {
+    find "$HOME_DIR" \
+        -type d \( -path "$HOME_DIR/Library" -o -path "$HOME_DIR/.Trash" -o -name "node_modules" -o -name ".git" \) -prune -o \
+        "$@" -print 2>/dev/null || true
+}
+
+emit_large_files_bytes() {
+    scoped_find_pruned -type f -size "+${LARGE_FILE_THRESHOLD_MB}M" | while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        printf '%s\t%s\n' "$(stat_bytes "$f")" "$f"
+    done | sort -nr -k1,1 -k2,2
+}
+
+run_storage_audit() {
+    ds_count=0
+    dmg_count=0
+    pkg_count=0
+    zip_dl_count=0
+    thumbs_db_count=0
+    desktop_ini_count=0
+    thumbs_count=0
+    broken_links=0
+    nm_count=0
+    venv_count=0
+    git_count=0
+    venv_dirs_count=0
+    pycache_dirs_count=0
+    dup_found=0
+    old_dl_count=0
+    old_dl_bytes=0
+    dl_file_count=0
+    trash_count=0
+    home_bytes=0
+
+    # =============================================================================
+    # 1. DISK USAGE OVERVIEW
+    # =============================================================================
+    section_start_ms=$(now_ms)
+    section_header "📊 Disk Usage Overview"
+
+    echo -e "Scanning home directory size..."
+
+    echo "| Folder | Size |" >> "$REPORT_FILE"
+    echo "|--------|------|" >> "$REPORT_FILE"
+
+    while IFS=$'\t' read -r size folder; do
+        folder_name=$(basename "$folder")
+        echo -e "  ${CYAN}$folder_name${NC}: $size"
+        echo "| \`$folder_name\` | $size |" >> "$REPORT_FILE"
+        folder_bytes=$(dir_bytes "$folder")
+        folder_bytes=${folder_bytes:-0}
+        folder_ndjson_path=$(redact_path_for_ndjson "$folder")
+        printf '%s\t%s\n' "$folder_bytes" "$folder_ndjson_path" >> "$TOP_PATHS_FILE"
+    done < <(du -sh "$HOME_DIR"/*/ 2>/dev/null | sort -hr | sed -n '1,20p' || true)
+    emit_top_items_ndjson "top_paths" "$TOP_PATHS_FILE" "$HEATMAP_EMIT_TOPN"
+
+    total_size=$(du -sh "$HOME_DIR" 2>/dev/null | cut -f1) || true
+    total_size=${total_size:-unknown}
+    echo -e "\n  ${BOLD}Total home directory: $total_size${NC}"
+    echo -e "\n**Total home directory size:** $total_size\n" >> "$REPORT_FILE"
+    home_bytes=$(dir_bytes "$HOME_DIR")
+    section_end_ms=$(now_ms)
+    emit_timing "disk_usage_overview" "$section_start_ms" "$section_end_ms"
+
+    # =============================================================================
+    # 2. LARGE FILES (> threshold)
+    # =============================================================================
+    section_start_ms=$(now_ms)
+    section_header "📦 Large Files (> ${LARGE_FILE_THRESHOLD_MB}MB)"
+
+    echo -e "Scanning for large files..."
+
+    large_count=0
+    large_ndjson_count=0
+    echo "| Size | File |" >> "$REPORT_FILE"
+    echo "|------|------|" >> "$REPORT_FILE"
+
+    while IFS=$'\t' read -r bytes file; do
+        [ -n "$file" ] || continue
+        size=$(du -sh "$file" 2>/dev/null | cut -f1)
+        rel_path="${file#$HOME_DIR/}"
+        echo -e "  ${RED}$size${NC}  $rel_path"
+        echo "| $size | \`$rel_path\` |" >> "$REPORT_FILE"
+        ((large_count += 1))
+        if [ -n "$NDJSON_FILE" ] && (( large_ndjson_count < 10 )); then
+            ndjson_path=$(redact_path_for_ndjson "$file")
+            append_ndjson_line "{\"type\":\"large_file\",\"run_id\":$(json_escape "$RUN_ID"),\"path\":$(json_escape "$ndjson_path"),\"bytes\":${bytes:-0}}"
+            ((large_ndjson_count += 1))
+        fi
+    done < <(emit_large_files_bytes | sed -n '1,30p')
+
+    if (( large_count == 0 )); then
+        echo -e "  ${GREEN}No files found over ${LARGE_FILE_THRESHOLD_MB}MB${NC}"
+        echo "_No files found over ${LARGE_FILE_THRESHOLD_MB}MB._" >> "$REPORT_FILE"
+    fi
+    echo "" >> "$REPORT_FILE"
+    section_end_ms=$(now_ms)
+    emit_timing "large_files" "$section_start_ms" "$section_end_ms"
+
+    # =============================================================================
+    # 3. JUNK FILES
+    # =============================================================================
+    section_header "🗑️ Junk Files"
+
+    echo -e "Scanning for common junk..."
+
+    ds_start_ms=$(now_ms)
+    ds_count=$(home_find_excluding -type f -name ".DS_Store" | count_lines) || true
+    ds_count=${ds_count:-0}
+    echo -e "  .DS_Store files: ${YELLOW}$ds_count${NC}"
+    echo "- **\`.DS_Store\` files:** $ds_count" >> "$REPORT_FILE"
+    ds_end_ms=$(now_ms)
+    emit_timing "ds_store" "$ds_start_ms" "$ds_end_ms"
+
+    installers_start_ms=$(now_ms)
+    declare -a dmg_files=()
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        dmg_files+=("$f")
+    done < <(scoped_find_pruned -type f -name "*.dmg" | sort)
+    dmg_count=${#dmg_files[@]}
+    echo -e "  .dmg installers: ${YELLOW}$dmg_count${NC}"
+    echo "- **\`.dmg\` installers:** $dmg_count" >> "$REPORT_FILE"
+
+    if (( dmg_count > 0 )); then
+        echo "" >> "$REPORT_FILE"
+        echo "  DMG files found:" >> "$REPORT_FILE"
+        for f in "${dmg_files[@]}"; do
+            rel="${f#$HOME_DIR/}"
+            fsize=$(du -sh "$f" 2>/dev/null | cut -f1)
+            echo -e "    ${CYAN}$fsize${NC}  $rel"
+            echo "  - \`$rel\` ($fsize)" >> "$REPORT_FILE"
+        done
+        echo "" >> "$REPORT_FILE"
+    fi
+
+    pkg_count=$(scoped_find_pruned -type f -name "*.pkg" | count_lines) || true
+    pkg_count=${pkg_count:-0}
+    echo -e "  .pkg installers: ${YELLOW}$pkg_count${NC}"
+    echo "- **\`.pkg\` installers:** $pkg_count" >> "$REPORT_FILE"
+
+    if [ -d "$HOME_DIR/Downloads" ]; then
+        zip_dl_count=$({ find "$HOME_DIR/Downloads" -type f -name "*.zip" 2>/dev/null || true; } | count_lines)
+        zip_dl_count=${zip_dl_count:-0}
+        zip_note=""
+    else
+        zip_dl_count=0
+        zip_note="_Downloads folder not found; zip scan skipped._"
+    fi
+    echo -e "  .zip files in Downloads: ${YELLOW}$zip_dl_count${NC}"
+    echo "- **\`.zip\` files in Downloads:** $zip_dl_count" >> "$REPORT_FILE"
+    if [ -n "$zip_note" ]; then
+        echo "  ${YELLOW}Downloads folder not found; zip scan skipped.${NC}"
+        echo "$zip_note" >> "$REPORT_FILE"
+    fi
+    installers_end_ms=$(now_ms)
+    emit_timing "installers" "$installers_start_ms" "$installers_end_ms"
+
+    windows_start_ms=$(now_ms)
+    thumbs_db_count=$(home_find_excluding -type f -name "Thumbs.db" | count_lines) || true
+    thumbs_db_count=${thumbs_db_count:-0}
+    desktop_ini_count=$(home_find_excluding -type f -name "desktop.ini" | count_lines) || true
+    desktop_ini_count=${desktop_ini_count:-0}
+    thumbs_count=$((thumbs_db_count + desktop_ini_count))
+    echo -e "  Windows artifacts (Thumbs.db, desktop.ini): ${YELLOW}$thumbs_count${NC}"
+    echo "- **Windows artifacts:** $thumbs_count" >> "$REPORT_FILE"
+    windows_end_ms=$(now_ms)
+    emit_timing "windows_artifacts" "$windows_start_ms" "$windows_end_ms"
+
+    links_start_ms=$(now_ms)
+    broken_links=$({ find "$HOME_DIR" -maxdepth 4 -type l ! -exec test -e {} \; -print 2>/dev/null || true; } | count_lines) || true
+    broken_links=${broken_links:-0}
+    echo -e "  Broken symlinks: ${YELLOW}$broken_links${NC}"
+    echo "- **Broken symlinks:** $broken_links" >> "$REPORT_FILE"
+    links_end_ms=$(now_ms)
+    emit_timing "broken_symlinks" "$links_start_ms" "$links_end_ms"
+
+    echo "" >> "$REPORT_FILE"
+
+    # =============================================================================
+    # 4. DOWNLOADS AUDIT
+    # =============================================================================
+    section_header "📥 Downloads Folder Audit"
+
+    if [ -d "$HOME_DIR/Downloads" ]; then
+        dl_size=$(du -sh "$HOME_DIR/Downloads" 2>/dev/null | cut -f1) || true
+        dl_size=${dl_size:-0B}
+        dl_file_count=$({ find "$HOME_DIR/Downloads" -type f 2>/dev/null || true; } | count_lines)
+        dl_file_count=${dl_file_count:-0}
+        echo -e "  Total size: ${BOLD}$dl_size${NC} ($dl_file_count files)"
+        echo "**Total size:** $dl_size ($dl_file_count files)" >> "$REPORT_FILE"
+
+        echo -e "\n  ${CYAN}File type breakdown:${NC}"
+        echo -e "\n### File Type Breakdown\n" >> "$REPORT_FILE"
+        echo "| Type | Count | Total Size |" >> "$REPORT_FILE"
+        echo "|------|-------|------------|" >> "$REPORT_FILE"
+
+        for ext in pdf dmg zip pkg png jpg jpeg gif mp4 mov mp3 doc docx xls xlsx csv txt html js py sh; do
+            count=$({ find "$HOME_DIR/Downloads" -iname "*.$ext" -type f 2>/dev/null || true; } | count_lines)
+            count=${count:-0}
+            if (( count > 0 )); then
+                ext_size=$({ find "$HOME_DIR/Downloads" -iname "*.$ext" -type f -exec du -ch {} + 2>/dev/null || true; } | awk 'END{print $1}') || true
+                ext_size=${ext_size:-0B}
+                echo -e "    .$ext: ${YELLOW}$count files${NC} ($ext_size)"
+                echo "| \`.$ext\` | $count | $ext_size |" >> "$REPORT_FILE"
+            fi
+        done
+
+        echo -e "\n  ${CYAN}Old files (not accessed in ${OLD_FILE_DAYS}+ days):${NC}"
+        old_dl_count=$({ find "$HOME_DIR/Downloads" -type f -atime +${OLD_FILE_DAYS} 2>/dev/null || true; } | count_lines)
+        old_dl_count=${old_dl_count:-0}
+        echo -e "    Count: ${YELLOW}$old_dl_count${NC}"
+        echo -e "\n### Stale Downloads (${OLD_FILE_DAYS}+ days since last access)\n" >> "$REPORT_FILE"
+        echo "**Count:** $old_dl_count files" >> "$REPORT_FILE"
+
+        if (( old_dl_count > 0 )); then
+            old_dl_size=$({ find "$HOME_DIR/Downloads" -type f -atime +${OLD_FILE_DAYS} -exec du -ch {} + 2>/dev/null || true; } | awk 'END{print $1}') || true
+            old_dl_size=${old_dl_size:-0B}
+            old_dl_bytes=$({ find "$HOME_DIR/Downloads" -type f -atime +${OLD_FILE_DAYS} 2>/dev/null || true; } | sum_bytes_from_stdin) || true
+            old_dl_bytes=${old_dl_bytes:-0}
+            echo -e "    Total size: ${YELLOW}$old_dl_size${NC}"
+            echo "**Total size:** $old_dl_size" >> "$REPORT_FILE"
+        fi
+    else
+        echo -e "  ${RED}Downloads folder not found${NC}"
+        echo "_Downloads folder not found._" >> "$REPORT_FILE"
+    fi
+
+    echo "" >> "$REPORT_FILE"
+
+    # =============================================================================
+    # 5. DESKTOP AUDIT
+    # =============================================================================
+    section_header "🖥️ Desktop Audit"
+
+    if [ -d "$HOME_DIR/Desktop" ]; then
+        desktop_size=$(du -sh "$HOME_DIR/Desktop" 2>/dev/null | cut -f1)
+        desktop_count=$({ find "$HOME_DIR/Desktop" -maxdepth 1 -not -name "." -not -name "cleanup-audit" 2>/dev/null || true; } | count_lines)
+        desktop_count=${desktop_count:-0}
+        echo -e "  Items on Desktop: ${BOLD}$desktop_count${NC} ($desktop_size)"
+        echo "**Items on Desktop:** $desktop_count ($desktop_size)" >> "$REPORT_FILE"
+
+        if (( desktop_count > 0 )); then
+            echo -e "\n  ${CYAN}Desktop items:${NC}"
+            echo -e "\n### Desktop Items\n" >> "$REPORT_FILE"
+            while IFS= read -r item; do
+                [ -z "$item" ] && continue
+                name=$(basename "$item")
+                [ "$name" = "cleanup-audit" ] && continue
+                isize=$(du -sh "$item" 2>/dev/null | cut -f1)
+                if [ -d "$item" ]; then
+                    echo -e "    📁 $name ($isize)"
+                    echo "- 📁 \`$name/\` ($isize)" >> "$REPORT_FILE"
+                else
+                    echo -e "    📄 $name ($isize)"
+                    echo "- 📄 \`$name\` ($isize)" >> "$REPORT_FILE"
+                fi
+            done < <(find "$HOME_DIR/Desktop" -maxdepth 1 -not -name "." -not -path "$HOME_DIR/Desktop" 2>/dev/null | sort)
+        fi
+    else
+        echo -e "  ${RED}Desktop folder not found${NC}"
+        echo "_Desktop folder not found._" >> "$REPORT_FILE"
+    fi
+
+    echo "" >> "$REPORT_FILE"
+
+    # =============================================================================
+    # 6. DOCUMENTS AUDIT
+    # =============================================================================
+    section_header "📁 Documents Audit"
+
+    if [ -d "$HOME_DIR/Documents" ]; then
+        docs_size=$(du -sh "$HOME_DIR/Documents" 2>/dev/null | cut -f1)
+        docs_folder_count=$({ find "$HOME_DIR/Documents" -maxdepth 1 -type d -not -name "." -not -path "$HOME_DIR/Documents" 2>/dev/null || true; } | count_lines)
+        docs_folder_count=${docs_folder_count:-0}
+        docs_file_count=$({ find "$HOME_DIR/Documents" -maxdepth 1 -type f 2>/dev/null || true; } | count_lines)
+        docs_file_count=${docs_file_count:-0}
+        echo -e "  Total size: ${BOLD}$docs_size${NC}"
+        echo -e "  Top-level: ${YELLOW}$docs_folder_count folders, $docs_file_count loose files${NC}"
+        echo "**Total size:** $docs_size" >> "$REPORT_FILE"
+        echo "**Top-level:** $docs_folder_count folders, $docs_file_count loose files" >> "$REPORT_FILE"
+
+        echo -e "\n  ${CYAN}Top folders by size:${NC}"
+        echo -e "\n### Top Folders by Size\n" >> "$REPORT_FILE"
+        echo "| Folder | Size |" >> "$REPORT_FILE"
+        echo "|--------|------|" >> "$REPORT_FILE"
+        while IFS=$'\t' read -r size folder; do
+            fname=$(basename "$folder")
+            folder_bytes=$(dir_bytes "$folder")
+            folder_bytes=${folder_bytes:-0}
+            printf '%s\t%s\n' "$folder_bytes" "$folder" >> "$TOP_DOCUMENTS_FOLDERS_FILE"
+            echo -e "    📁 $fname: $size"
+            echo "| \`$fname\` | $size |" >> "$REPORT_FILE"
+        done < <(du -sh "$HOME_DIR/Documents"/*/ 2>/dev/null | sort -hr | sed -n '1,15p')
+
+        if (( docs_file_count > 0 )); then
+            echo -e "\n  ${CYAN}Loose files in Documents root:${NC}"
+            echo -e "\n### Loose Files in Documents Root\n" >> "$REPORT_FILE"
+            while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                fname=$(basename "$f")
+                fsize=$(du -sh "$f" 2>/dev/null | cut -f1)
+                echo -e "    📄 $fname ($fsize)"
+                echo "- \`$fname\` ($fsize)" >> "$REPORT_FILE"
+            done < <(find "$HOME_DIR/Documents" -maxdepth 1 -type f 2>/dev/null | sort | sed -n '1,30p')
+        fi
+    else
+        echo -e "  ${RED}Documents folder not found${NC}"
+        echo "_Documents folder not found._" >> "$REPORT_FILE"
+    fi
+
+    echo "" >> "$REPORT_FILE"
+
+    # =============================================================================
+    # 7. NODE_MODULES / DEV BLOAT
+    # =============================================================================
+    section_header "⚙️ Developer Bloat"
+
+    echo -e "Scanning for node_modules, .venv, build artifacts..."
+
+    node_modules_start_ms=$(now_ms)
+    declare -a nm_dirs=()
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        nm_dirs+=("$d")
+    done < <(find "$HOME_DIR" -maxdepth 6 -type d -name "node_modules" -not -path "*/Library/*" 2>/dev/null | sort)
+    nm_count=${#nm_dirs[@]}
+    echo -e "  node_modules directories: ${YELLOW}$nm_count${NC}"
+    echo "### node_modules Directories: $nm_count" >> "$REPORT_FILE"
+    node_modules_end_ms=$(now_ms)
+    emit_timing "node_modules" "$node_modules_start_ms" "$node_modules_end_ms"
+
+    if (( nm_count > 0 )); then
+        echo "" >> "$REPORT_FILE"
+        echo "| Location | Size |" >> "$REPORT_FILE"
+        echo "|----------|------|" >> "$REPORT_FILE"
+        for nm in "${nm_dirs[@]}"; do
+            nm_size=$(du -sh "$nm" 2>/dev/null | cut -f1)
+            nm_bytes=$(dir_bytes "$nm")
+            nm_bytes=${nm_bytes:-0}
+            printf '%s\t%s\n' "$nm_bytes" "$nm" >> "$TOP_NODE_MODULES_FILE"
+            rel="${nm#$HOME_DIR/}"
+            echo -e "    ${CYAN}$nm_size${NC}  $rel"
+            echo "| \`$rel\` | $nm_size |" >> "$REPORT_FILE"
+        done
+        echo "" >> "$REPORT_FILE"
+    fi
+
+    venv_dirs_count=$({ find "$HOME_DIR" -maxdepth 5 -type d \( -name ".venv" -o -name "venv" \) -not -path "*/Library/*" 2>/dev/null || true; } | count_lines)
+    venv_dirs_count=${venv_dirs_count:-0}
+    pycache_dirs_count=$({ find "$HOME_DIR" -maxdepth 5 -type d -name "__pycache__" -not -path "*/Library/*" 2>/dev/null || true; } | count_lines)
+    pycache_dirs_count=${pycache_dirs_count:-0}
+    venv_count=$((venv_dirs_count + pycache_dirs_count))
+    venv_count=${venv_count:-0}
+    echo -e "  Python venvs / __pycache__: ${YELLOW}$venv_count${NC}"
+    echo "### Python Virtual Envs / Cache: $venv_count" >> "$REPORT_FILE"
+
+    git_start_ms=$(now_ms)
+    git_count=$({ find "$HOME_DIR" -maxdepth 5 -type d -name ".git" -not -path "*/Library/*" 2>/dev/null || true; } | count_lines)
+    git_count=${git_count:-0}
+    echo -e "  Git repositories: ${YELLOW}$git_count${NC}"
+    echo "### Git Repositories: $git_count" >> "$REPORT_FILE"
+    git_end_ms=$(now_ms)
+    emit_timing "git_repositories" "$git_start_ms" "$git_end_ms"
+
+    echo "" >> "$REPORT_FILE"
+
+    # =============================================================================
+    # 8. DUPLICATE FILE DETECTION (basic, by name + size)
+    # =============================================================================
+    section_header "🔍 Potential Duplicate Files"
+
+    echo -e "Scanning for potential duplicates (same name + same size)..."
+    echo -e "_Checking Downloads, Desktop, and Documents for files with identical names and sizes._\n" >> "$REPORT_FILE"
+
+    dup_found=0
+    for dir in "$HOME_DIR/Downloads" "$HOME_DIR/Desktop" "$HOME_DIR/Documents"; do
+        [ -d "$dir" ] || continue
+        dir_name=$(basename "$dir")
+
+        declare -a copies=()
+        while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            copies+=("$c")
+        done < <(find "$dir" -type f \( -name "* ([0-9])*" -o -name "* copy*" -o -name "*-1.*" -o -name "*-2.*" \) 2>/dev/null | sort)
+        copy_count=${#copies[@]}
+
+        if (( copy_count > 0 )); then
+            echo -e "\n  ${CYAN}$dir_name — possible copies:${NC}"
+            echo "### $dir_name\n" >> "$REPORT_FILE"
+            for c in "${copies[@]}"; do
+                cname=$(basename "$c")
+                csize=$(du -sh "$c" 2>/dev/null | cut -f1)
+                echo -e "    ${YELLOW}$cname${NC} ($csize)"
+                echo "- \`$cname\` ($csize)" >> "$REPORT_FILE"
+                ((dup_found += 1))
+            done
+            echo "" >> "$REPORT_FILE"
+        fi
+    done
+
+    if (( dup_found == 0 )); then
+        echo -e "  ${GREEN}No obvious duplicates found${NC}"
+        echo "_No obvious duplicates found._" >> "$REPORT_FILE"
+    fi
+
+    echo "" >> "$REPORT_FILE"
+
+    # =============================================================================
+    # 9. TRASH SIZE
+    # =============================================================================
+    trash_start_ms=$(now_ms)
+    section_header "🗑️ Trash"
+
+    TRASH_DIR="$HOME_DIR/.Trash"
+    if [ -d "$TRASH_DIR" ]; then
+        trash_size="$(soft_out du -sh "$TRASH_DIR" | cut -f1)"
+        trash_size=${trash_size:-0B}
+        trash_count="$(soft_out find "$TRASH_DIR" -mindepth 1 -maxdepth 1 | count_lines)"
+        trash_count=${trash_count:-0}
+        echo -e "  Trash size: ${BOLD}$trash_size${NC} ($trash_count files)"
+        echo "**Trash size:** $trash_size ($trash_count files)" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        echo "_Empty Trash in Finder to reclaim this space._" >> "$REPORT_FILE"
+    else
+        echo -e "  ${GREEN}Trash is empty${NC}"
+        echo "_Trash is empty._" >> "$REPORT_FILE"
+    fi
+
+    echo "" >> "$REPORT_FILE"
+    trash_end_ms=$(now_ms)
+    emit_timing "trash" "$trash_start_ms" "$trash_end_ms"
+
+    if [ -n "$NDJSON_FILE" ]; then
+        downloads_bytes=$(dir_bytes "$HOME_DIR/Downloads")
+        desktop_bytes=$(dir_bytes "$HOME_DIR/Desktop")
+        documents_bytes=$(dir_bytes "$HOME_DIR/Documents")
+        trash_bytes=$(dir_bytes "$HOME_DIR/.Trash")
+        append_ndjson_line "{\"type\":\"summary\",\"run_id\":$(json_escape "$RUN_ID"),\"home_bytes\":${home_bytes:-0},\"downloads_bytes\":${downloads_bytes:-0},\"desktop_bytes\":${desktop_bytes:-0},\"documents_bytes\":${documents_bytes:-0},\"trash_bytes\":${trash_bytes:-0}}"
+        append_ndjson_line "{\"type\":\"counts\",\"run_id\":$(json_escape "$RUN_ID"),\"large_files\":${large_count:-0},\"ds_store\":${ds_count:-0},\"thumbs_db\":${thumbs_db_count:-0},\"desktop_ini\":${desktop_ini_count:-0},\"windows_artifacts\":${thumbs_count:-0},\"zip_downloads\":${zip_dl_count:-0},\"dmg\":${dmg_count:-0},\"pkg\":${pkg_count:-0},\"broken_symlinks\":${broken_links:-0},\"node_modules\":${nm_count:-0},\"venv_cache\":${venv_count:-0},\"venv_dirs\":${venv_dirs_count:-0},\"pycache_dirs\":${pycache_dirs_count:-0},\"git_repos\":${git_count:-0},\"potential_duplicates\":${dup_found:-0},\"downloads_stale\":${old_dl_count:-0}}"
+        append_ndjson_line "{\"type\":\"junk_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"ds_store_count\":${ds_count:-0},\"dmg_count\":${dmg_count:-0},\"pkg_count\":${pkg_count:-0},\"zip_downloads_count\":${zip_dl_count:-0},\"windows_artifacts_count\":${thumbs_count:-0},\"broken_symlinks_count\":${broken_links:-0}}"
+        append_ndjson_line "{\"type\":\"downloads_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"total_bytes\":${downloads_bytes:-0},\"file_count\":${dl_file_count:-0},\"old_file_count\":${old_dl_count:-0},\"old_total_bytes\":${old_dl_bytes:-0}}"
+        append_ndjson_line "{\"type\":\"dev_bloat_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"node_modules_dirs\":${nm_count:-0},\"python_venvs\":${venv_count:-0},\"python_venv_dirs\":${venv_dirs_count:-0},\"pycache_dirs\":${pycache_dirs_count:-0},\"git_repos\":${git_count:-0}}"
+        append_ndjson_line "{\"type\":\"trash_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"total_bytes\":${trash_bytes:-0},\"file_count\":${trash_count:-0}}"
+        emit_top_items_ndjson "top_node_modules" "$TOP_NODE_MODULES_FILE" 10
+        emit_top_items_ndjson "top_documents_folders" "$TOP_DOCUMENTS_FOLDERS_FILE" 10
+    fi
+}
+
+storage_main() {
+    storage_set_defaults_if_unset
+    storage_parse_args "$@"
+    storage_validate_and_resolve_paths
+    storage_build_scan_roots
+    storage_prepare_files_and_common
+    storage_write_report_header_if_needed
+    storage_init_ndjson_if_needed
+    run_storage_audit
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    storage_main "$@"
+fi

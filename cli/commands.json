@@ -5,6 +5,12 @@
       "os": ["mac"],
       "display": "Home cleanup audit",
       "exec": ["audit/mac/home-cleanup-audit.sh"]
+    },
+    {
+      "id": "storage",
+      "os": ["mac"],
+      "display": "Storage audit",
+      "exec": ["audit/mac/storage.sh"]
     }
   ]
 }
