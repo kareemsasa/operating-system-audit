@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Mac Home Directory Cleanup Audit
+# Mac Full System Audit
 # Conservative mode — reports only, moves/deletes NOTHING
 # =============================================================================
 
@@ -9,7 +9,7 @@ export LC_ALL=C
 
 # --- Defaults / Configuration ---
 HOME_DIR="$HOME"
-DEFAULT_REPORT_DIR="$(pwd)/output/cleanup-audit"
+DEFAULT_REPORT_DIR="$(pwd)/output/full-audit"
 REPORT_DIR="${REPORT_DIR:-$DEFAULT_REPORT_DIR}"
 LARGE_FILE_THRESHOLD_MB=100
 OLD_FILE_DAYS=180
@@ -200,18 +200,18 @@ if [ -n "$OUTPUT_FILE" ]; then
     REPORT_FILE="$OUTPUT_FILE"
     REPORT_DIR=$(dirname "$REPORT_FILE")
 else
-    REPORT_FILE="$REPORT_DIR/cleanup-audit-$TIMESTAMP_FOR_FILENAME.md"
+    REPORT_FILE="$REPORT_DIR/full-audit-$TIMESTAMP_FOR_FILENAME.md"
 fi
 
 # --- Setup ---
 mkdir -p "$REPORT_DIR"
-SOFT_FAILURE_LOG="$REPORT_DIR/.cleanup-audit-soft-failures-$TIMESTAMP_FOR_FILENAME.log"
+SOFT_FAILURE_LOG="$REPORT_DIR/.full-audit-soft-failures-$TIMESTAMP_FOR_FILENAME.log"
 : > "$SOFT_FAILURE_LOG"
-TOP_NODE_MODULES_FILE="$REPORT_DIR/.cleanup-audit-top-node-modules-$TIMESTAMP_FOR_FILENAME.tsv"
+TOP_NODE_MODULES_FILE="$REPORT_DIR/.full-audit-top-node-modules-$TIMESTAMP_FOR_FILENAME.tsv"
 : > "$TOP_NODE_MODULES_FILE"
-TOP_DOCUMENTS_FOLDERS_FILE="$REPORT_DIR/.cleanup-audit-top-doc-folders-$TIMESTAMP_FOR_FILENAME.tsv"
+TOP_DOCUMENTS_FOLDERS_FILE="$REPORT_DIR/.full-audit-top-doc-folders-$TIMESTAMP_FOR_FILENAME.tsv"
 : > "$TOP_DOCUMENTS_FOLDERS_FILE"
-TOP_PATHS_FILE="$REPORT_DIR/.cleanup-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv"
+TOP_PATHS_FILE="$REPORT_DIR/.full-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv"
 : > "$TOP_PATHS_FILE"
 
 NDJSON_FILE=""
@@ -236,7 +236,7 @@ source "$(dirname "$0")/lib/common.sh"
 
 echo -e "${BOLD}${CYAN}"
 echo "╔══════════════════════════════════════════════════╗"
-echo "║       Mac Home Directory Cleanup Audit           ║"
+echo "║              Mac Full System Audit               ║"
 echo "║       Conservative Mode — Report Only            ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo -e "${NC}"
@@ -244,7 +244,7 @@ echo -e "Report will be saved to: ${GREEN}$REPORT_FILE${NC}"
 echo ""
 
 cat > "$REPORT_FILE" << EOF
-# 🧹 Mac Home Directory Cleanup Audit
+# 🔍 Mac Full System Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
 **Mode:** Conservative (report only — nothing moved or deleted)
@@ -271,7 +271,7 @@ if [ -n "$NDJSON_FILE" ]; then
     if $DEEP_SCAN && [ -z "$ROOTS_OVERRIDE_RAW" ]; then
         scan_mode="deep"
     fi
-    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"home-cleanup-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"full-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
     append_ndjson_line "{\"type\":\"scan\",\"run_id\":$(json_escape "$RUN_ID"),\"mode\":$(json_escape "$scan_mode"),\"threshold_mb\":$LARGE_FILE_THRESHOLD_MB,\"old_days\":$OLD_FILE_DAYS,\"redact_paths\":$([ "$REDACT_PATHS" = true ] && echo true || echo false)}"
     STORAGE_NDJSON_INITIALIZED=true
 fi

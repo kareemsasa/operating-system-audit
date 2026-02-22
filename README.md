@@ -36,7 +36,7 @@ Audit collectors are implemented per-OS, with a unified interface layer.
 
 ### macOS
 
-Home cleanup audit:
+Full system audit:
 
 - Disk usage overview
 - Large file detection
@@ -84,7 +84,7 @@ List available commands for the detected OS:
 Run a command with pass-through flags:
 
 ```bash
-./dist/osaudit run cleanup -- --ndjson
+./dist/osaudit run full -- --ndjson
 ```
 
 Command manifest shape is documented in `cli/commands.schema.json` for editor/CI validation.

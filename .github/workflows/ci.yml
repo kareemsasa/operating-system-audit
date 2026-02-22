@@ -29,19 +29,19 @@ jobs:
       - name: Bash syntax checks
         shell: bash
         run: |
-          bash -n audit/mac/home-cleanup-audit.sh
+          bash -n audit/mac/full-audit.sh
 
       - name: Check script executable bit
         run: |
-          test -x audit/mac/home-cleanup-audit.sh
+          test -x audit/mac/full-audit.sh
 
       - name: Smoke tests
         run: |
           ./dist/osaudit list
-          if ./dist/osaudit list | awk '{print $1}' | grep -qx cleanup; then
-            ./dist/osaudit run cleanup -- --help
+          if ./dist/osaudit list | awk '{print $1}' | grep -qx full; then
+            ./dist/osaudit run full -- --help
           else
-            echo "cleanup not available on this OS; skipping run smoke."
+            echo "full not available on this OS; skipping run smoke."
           fi
 
   mac-smoke:
@@ -63,4 +63,4 @@ jobs:
       - name: Smoke tests
         run: |
           ./dist/osaudit list
-          ./dist/osaudit run cleanup -- --help
+          ./dist/osaudit run full -- --help

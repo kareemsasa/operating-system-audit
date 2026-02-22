@@ -322,6 +322,33 @@ home_find_excluding() {
         "$@" -print 2>/dev/null || true
 }
 
+human_size_kb() {
+    local kb=${1:-0}
+    if (( kb < 0 )); then
+        kb=0
+    fi
+
+    if command -v numfmt >/dev/null 2>&1; then
+        local bytes=$((kb * 1024))
+        local nf
+        nf=$(numfmt --to=iec --suffix=B "$bytes" 2>/dev/null || true)
+        if [ -n "$nf" ]; then
+            echo "${nf%B}"
+            return 0
+        fi
+    fi
+
+    if (( kb >= 1073741824 )); then
+        echo "$((kb / 1073741824))T"
+    elif (( kb >= 1048576 )); then
+        echo "$((kb / 1048576))G"
+    elif (( kb >= 1024 )); then
+        echo "$((kb / 1024))M"
+    else
+        echo "${kb}K"
+    fi
+}
+
 emit_large_files_bytes() {
     scoped_find_pruned -type f -size "+${LARGE_FILE_THRESHOLD_MB}M" | while IFS= read -r f; do
         [ -n "$f" ] || continue
@@ -361,22 +388,31 @@ run_storage_audit() {
     echo "| Folder | Size |" >> "$REPORT_FILE"
     echo "|--------|------|" >> "$REPORT_FILE"
 
-    while IFS=$'\t' read -r size folder; do
-        folder_name=$(basename "$folder")
-        echo -e "  ${CYAN}$folder_name${NC}: $size"
-        echo "| \`$folder_name\` | $size |" >> "$REPORT_FILE"
-        folder_bytes=$(dir_bytes "$folder")
-        folder_bytes=${folder_bytes:-0}
+    total_kb=0
+    folder_index=0
+    while IFS=$'\t' read -r kb folder; do
+        [ -n "$folder" ] || continue
+        kb=${kb:-0}
+        folder_bytes=$((kb * 1024))
+        total_kb=$((total_kb + kb))
         folder_ndjson_path=$(redact_path_for_ndjson "$folder")
         printf '%s\t%s\n' "$folder_bytes" "$folder_ndjson_path" >> "$TOP_PATHS_FILE"
-    done < <(du -sh "$HOME_DIR"/*/ 2>/dev/null | sort -hr | sed -n '1,20p' || true)
+
+        if (( folder_index >= 20 )); then
+            continue
+        fi
+        folder_name=$(basename "$folder")
+        size=$(human_size_kb "$kb")
+        echo -e "  ${CYAN}$folder_name${NC}: $size"
+        echo "| \`$folder_name\` | $size |" >> "$REPORT_FILE"
+        folder_index=$((folder_index + 1))
+    done < <(du -sk "$HOME_DIR"/*/ 2>/dev/null | sort -nr || true)
     emit_top_items_ndjson "top_paths" "$TOP_PATHS_FILE" "$HEATMAP_EMIT_TOPN"
 
-    total_size=$(du -sh "$HOME_DIR" 2>/dev/null | cut -f1) || true
-    total_size=${total_size:-unknown}
-    echo -e "\n  ${BOLD}Total home directory: $total_size${NC}"
-    echo -e "\n**Total home directory size:** $total_size\n" >> "$REPORT_FILE"
-    home_bytes=$(dir_bytes "$HOME_DIR")
+    total_size=$(human_size_kb "$total_kb")
+    echo -e "\n  ${BOLD}Total home directory (visible directories only): $total_size${NC}"
+    echo -e "\n**Total home directory size (visible directories only):** $total_size\n" >> "$REPORT_FILE"
+    home_bytes=$((total_kb * 1024))
     section_end_ms=$(now_ms)
     emit_timing "disk_usage_overview" "$section_start_ms" "$section_end_ms"
 
@@ -422,13 +458,36 @@ run_storage_audit() {
 
     echo -e "Scanning for common junk..."
 
-    ds_start_ms=$(now_ms)
-    ds_count=$(home_find_excluding -type f -name ".DS_Store" | count_lines) || true
-    ds_count=${ds_count:-0}
+    junk_scan_start_ms=$(now_ms)
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        base=$(basename "$path")
+        if [ "$base" = ".DS_Store" ]; then
+            ds_count=$((ds_count + 1))
+        fi
+        if [ "$base" = "Thumbs.db" ]; then
+            thumbs_db_count=$((thumbs_db_count + 1))
+        fi
+        if [ "$base" = "desktop.ini" ]; then
+            desktop_ini_count=$((desktop_ini_count + 1))
+        fi
+        if [ -L "$path" ] && [ ! -e "$path" ]; then
+            broken_links=$((broken_links + 1))
+        fi
+    done < <(
+        find "$HOME_DIR" \( -path "*/Library" -o -path "*/.Trash" \) -prune -o \( \
+            -name ".DS_Store" -o \
+            -name "Thumbs.db" -o \
+            -name "desktop.ini" -o \
+            -type l ! -exec test -e {} \; \
+        \) -print 2>/dev/null || true
+    )
+    thumbs_count=$((thumbs_db_count + desktop_ini_count))
+    junk_scan_end_ms=$(now_ms)
+    emit_timing "junk_scan_combined" "$junk_scan_start_ms" "$junk_scan_end_ms"
+
     echo -e "  .DS_Store files: ${YELLOW}$ds_count${NC}"
     echo "- **\`.DS_Store\` files:** $ds_count" >> "$REPORT_FILE"
-    ds_end_ms=$(now_ms)
-    emit_timing "ds_store" "$ds_start_ms" "$ds_end_ms"
 
     installers_start_ms=$(now_ms)
     declare -a dmg_files=()
@@ -474,24 +533,10 @@ run_storage_audit() {
     installers_end_ms=$(now_ms)
     emit_timing "installers" "$installers_start_ms" "$installers_end_ms"
 
-    windows_start_ms=$(now_ms)
-    thumbs_db_count=$(home_find_excluding -type f -name "Thumbs.db" | count_lines) || true
-    thumbs_db_count=${thumbs_db_count:-0}
-    desktop_ini_count=$(home_find_excluding -type f -name "desktop.ini" | count_lines) || true
-    desktop_ini_count=${desktop_ini_count:-0}
-    thumbs_count=$((thumbs_db_count + desktop_ini_count))
     echo -e "  Windows artifacts (Thumbs.db, desktop.ini): ${YELLOW}$thumbs_count${NC}"
     echo "- **Windows artifacts:** $thumbs_count" >> "$REPORT_FILE"
-    windows_end_ms=$(now_ms)
-    emit_timing "windows_artifacts" "$windows_start_ms" "$windows_end_ms"
-
-    links_start_ms=$(now_ms)
-    broken_links=$({ find "$HOME_DIR" -maxdepth 4 -type l ! -exec test -e {} \; -print 2>/dev/null || true; } | count_lines) || true
-    broken_links=${broken_links:-0}
     echo -e "  Broken symlinks: ${YELLOW}$broken_links${NC}"
     echo "- **Broken symlinks:** $broken_links" >> "$REPORT_FILE"
-    links_end_ms=$(now_ms)
-    emit_timing "broken_symlinks" "$links_start_ms" "$links_end_ms"
 
     echo "" >> "$REPORT_FILE"
 

@@ -1,10 +1,10 @@
 {
   "commands": [
     {
-      "id": "cleanup",
+      "id": "full",
       "os": ["mac"],
-      "display": "Home cleanup audit",
-      "exec": ["audit/mac/home-cleanup-audit.sh"]
+      "display": "Full system audit",
+      "exec": ["audit/mac/full-audit.sh"]
     },
     {
       "id": "storage",
