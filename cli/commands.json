@@ -11,6 +11,36 @@
       "os": ["mac"],
       "display": "Storage audit",
       "exec": ["audit/mac/storage.sh"]
+    },
+    {
+      "id": "network",
+      "os": ["mac"],
+      "display": "Network audit",
+      "exec": ["audit/mac/network.sh"]
+    },
+    {
+      "id": "identity",
+      "os": ["mac"],
+      "display": "Identity & access audit",
+      "exec": ["audit/mac/identity.sh"]
+    },
+    {
+      "id": "config",
+      "os": ["mac"],
+      "display": "System configuration audit",
+      "exec": ["audit/mac/config.sh"]
+    },
+    {
+      "id": "execution",
+      "os": ["mac"],
+      "display": "Execution & processes audit",
+      "exec": ["audit/mac/execution.sh"]
+    },
+    {
+      "id": "persistence",
+      "os": ["mac"],
+      "display": "Persistence surfaces audit",
+      "exec": ["audit/mac/persistence.sh"]
     }
   ]
 }

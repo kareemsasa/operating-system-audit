@@ -277,6 +277,11 @@ if [ -n "$NDJSON_FILE" ]; then
 fi
 
 source "$(dirname "$0")/storage.sh"
+source "$(dirname "$0")/network.sh"
+source "$(dirname "$0")/identity.sh"
+source "$(dirname "$0")/config.sh"
+source "$(dirname "$0")/execution.sh"
+source "$(dirname "$0")/persistence.sh"
 storage_build_scan_roots
 for note in "${NDJSON_PENDING_NOTES[@]+"${NDJSON_PENDING_NOTES[@]}"}"; do
     if [ -n "$NDJSON_FILE" ]; then
@@ -284,6 +289,21 @@ for note in "${NDJSON_PENDING_NOTES[@]+"${NDJSON_PENDING_NOTES[@]}"}"; do
     fi
 done
 run_storage_audit
+if ! run_network_audit; then
+    append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"network_audit_failed\"}"
+fi
+if ! run_identity_audit; then
+    append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"identity_audit_failed\"}"
+fi
+if ! run_config_audit; then
+    append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"config_audit_failed\"}"
+fi
+if ! run_execution_audit; then
+    append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"execution_audit_failed\"}"
+fi
+if ! run_persistence_audit; then
+    append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"persistence_audit_failed\"}"
+fi
 
 HEATMAP_TREEMAP_FILE=""
 HEATMAP_TIMING_FILE=""
