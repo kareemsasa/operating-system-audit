@@ -26,14 +26,23 @@ jobs:
           mkdir -p dist
           go build -o dist/osaudit ./cmd/osaudit
 
+      - name: Go unit tests
+        run: go test ./...
+
       - name: Bash syntax checks
         shell: bash
         run: |
-          bash -n audit/mac/full-audit.sh
+          for f in audit/mac/*.sh audit/mac/lib/*.sh; do
+            echo "Checking $f"
+            bash -n "$f"
+          done
 
       - name: Check script executable bit
         run: |
-          test -x audit/mac/full-audit.sh
+          for f in audit/mac/*.sh audit/mac/lib/*.sh; do
+            echo "Checking $f"
+            test -x "$f"
+          done
 
       - name: Smoke tests
         run: |
@@ -59,6 +68,9 @@ jobs:
         run: |
           mkdir -p dist
           go build -o dist/osaudit ./cmd/osaudit
+
+      - name: Go unit tests
+        run: go test ./...
 
       - name: Smoke tests
         run: |

@@ -8,21 +8,14 @@ set -euo pipefail
 export LC_ALL=C
 
 # --- Defaults / Configuration ---
-HOME_DIR="$HOME"
-DEFAULT_REPORT_DIR="$(pwd)/output/full-audit"
-REPORT_DIR="${REPORT_DIR:-$DEFAULT_REPORT_DIR}"
-LARGE_FILE_THRESHOLD_MB=100
-OLD_FILE_DAYS=180
-DEEP_SCAN=false
-NO_COLOR=false
-OUTPUT_FILE=""
-WRITE_NDJSON=false
-ROOTS_OVERRIDE_RAW=""
-REDACT_PATHS_MODE="auto"
-REDACT_PATHS=false
-HEATMAP=false
-HEATMAP_EMIT_TOPN=100
-HEATMAP_RENDER_TOPN=50
+source "$(dirname "$0")/lib/init.sh"
+audit_set_defaults_if_unset "full-audit" "full-audit"
+
+LARGE_FILE_THRESHOLD_MB="${LARGE_FILE_THRESHOLD_MB:-100}"
+OLD_FILE_DAYS="${OLD_FILE_DAYS:-180}"
+DEEP_SCAN="${DEEP_SCAN:-false}"
+ROOTS_OVERRIDE_RAW="${ROOTS_OVERRIDE_RAW:-}"
+HEATMAP_EMIT_TOPN="${HEATMAP_EMIT_TOPN:-100}"
 declare -a METADATA_NOTES=()
 declare -a NDJSON_PENDING_NOTES=()
 
@@ -38,9 +31,6 @@ Options:
   --old-days <int>       Stale file threshold in days (default: 180)
   --deep                 Scan full home dir (pruned for Library/.Trash/.git/node_modules)
   --ndjson               Also write a compact NDJSON summary file
-  --heatmap              Render HTML heatmaps (auto-enables NDJSON)
-  --heatmap-emit-topn N  NDJSON top_paths/top_items emit count (default: 100)
-  --heatmap-render-topn N Render count passed to HTML renderer (default: 50)
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
   --no-color             Disable ANSI colors in terminal output
@@ -98,26 +88,6 @@ while (($# > 0)); do
             WRITE_NDJSON=true
             shift
             ;;
-        --heatmap)
-            HEATMAP=true
-            shift
-            ;;
-        --heatmap-emit-topn)
-            if (($# < 2)); then
-                echo "Error: --heatmap-emit-topn requires an integer" >&2
-                exit 1
-            fi
-            HEATMAP_EMIT_TOPN="$2"
-            shift 2
-            ;;
-        --heatmap-render-topn)
-            if (($# < 2)); then
-                echo "Error: --heatmap-render-topn requires an integer" >&2
-                exit 1
-            fi
-            HEATMAP_RENDER_TOPN="$2"
-            shift 2
-            ;;
         --redact-paths)
             REDACT_PATHS_MODE="on"
             shift
@@ -150,42 +120,6 @@ fi
 if [[ ! "$OLD_FILE_DAYS" =~ ^[0-9]+$ ]]; then
     echo "Error: --old-days must be a non-negative integer" >&2
     exit 1
-fi
-
-if [[ ! "$HEATMAP_EMIT_TOPN" =~ ^[0-9]+$ ]] || (( HEATMAP_EMIT_TOPN <= 0 )); then
-    echo "Error: --heatmap-emit-topn must be a positive integer" >&2
-    exit 1
-fi
-
-if [[ ! "$HEATMAP_RENDER_TOPN" =~ ^[0-9]+$ ]] || (( HEATMAP_RENDER_TOPN <= 0 )); then
-    echo "Error: --heatmap-render-topn must be a positive integer" >&2
-    exit 1
-fi
-
-TIMESTAMP_FOR_FILENAME=$(date +"%Y%m%d-%H%M%S")
-ISO_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-HOSTNAME_VAL=$(hostname 2>/dev/null || echo "unknown")
-CURRENT_USER=$(id -un 2>/dev/null || echo "${USER:-unknown}")
-if command -v sw_vers >/dev/null 2>&1; then
-    OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
-else
-    OS_VERSION="unknown"
-fi
-KERNEL_INFO=$(uname -a 2>/dev/null || echo "unknown")
-if command -v python3 >/dev/null 2>&1; then
-    RUN_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || true)
-else
-    RUN_ID=""
-fi
-if [ -z "${RUN_ID:-}" ] && command -v uuidgen >/dev/null 2>&1; then
-    RUN_ID=$(uuidgen 2>/dev/null || true)
-fi
-if [ -z "${RUN_ID:-}" ]; then
-    RUN_ID="${TIMESTAMP_FOR_FILENAME}-$$"
-fi
-
-if $HEATMAP && ! $WRITE_NDJSON; then
-    WRITE_NDJSON=true
 fi
 
 if $WRITE_NDJSON; then
@@ -305,31 +239,6 @@ if ! run_persistence_audit; then
     append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"persistence_audit_failed\"}"
 fi
 
-HEATMAP_TREEMAP_FILE=""
-HEATMAP_TIMING_FILE=""
-if $HEATMAP && [ -n "$NDJSON_FILE" ]; then
-    if ! command -v python3 >/dev/null 2>&1; then
-        append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"python3_missing_heatmaps_skipped\"}"
-    else
-        if [ -n "${OSAUDIT_ROOT:-}" ]; then
-            REPO_ROOT="$OSAUDIT_ROOT"
-        else
-            REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-        fi
-        if python3 "$REPO_ROOT/core/render_heatmaps.py" --ndjson "$NDJSON_FILE" --outdir "$REPORT_DIR" --render-topn "$HEATMAP_RENDER_TOPN"; then
-            run_id_safe=$(sanitize_run_id_for_filename "$RUN_ID")
-            candidate_treemap="$REPORT_DIR/heatmap-treemap-${run_id_safe}.html"
-            candidate_timing="$REPORT_DIR/heatmap-timing-${run_id_safe}.html"
-            if [ -f "$candidate_treemap" ] && [ -f "$candidate_timing" ]; then
-                HEATMAP_TREEMAP_FILE="$candidate_treemap"
-                HEATMAP_TIMING_FILE="$candidate_timing"
-            fi
-        else
-            append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"heatmap_render_failed\"}"
-        fi
-    fi
-fi
-
 section_header "📋 Suggested Organization Plan"
 
 cat >> "$REPORT_FILE" << 'EOF'
@@ -371,16 +280,6 @@ Based on the audit above, here's a recommended folder structure for your home di
 5. **Duplicate cleanup:** Review flagged copies and remove extras
 6. **Ongoing habit:** Process Downloads weekly, keep Desktop under 10 items
 EOF
-
-if [ -n "$HEATMAP_TREEMAP_FILE" ] && [ -n "$HEATMAP_TIMING_FILE" ]; then
-    cat >> "$REPORT_FILE" << EOF
-
-## 🗺️ Visualizations
-- Heatmaps are best-effort artifacts and may be skipped if rendering prerequisites fail.
-- Treemap heatmap: \`$HEATMAP_TREEMAP_FILE\`
-- Timing heatmap: \`$HEATMAP_TIMING_FILE\`
-EOF
-fi
 
 echo -e "\n${BOLD}${GREEN}"
 echo "╔══════════════════════════════════════════════════╗"

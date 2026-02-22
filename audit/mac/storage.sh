@@ -19,7 +19,9 @@ Options:
   --old-days <int>       Stale file threshold in days (default: 180)
   --deep                 Scan full home dir (pruned for Library/.Trash/.git/node_modules)
   --ndjson               Also write a compact NDJSON summary file
+  --heatmap              Render HTML heatmaps (auto-enables NDJSON)
   --heatmap-emit-topn N  NDJSON top_paths/top_items emit count (default: 100)
+  --heatmap-render-topn N Render count passed to HTML renderer (default: 50)
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
   --no-color             Disable ANSI colors in terminal output
@@ -28,41 +30,16 @@ EOF
 }
 
 storage_set_defaults_if_unset() {
-    HOME_DIR="${HOME_DIR:-$HOME}"
-    DEFAULT_REPORT_DIR="${DEFAULT_REPORT_DIR:-$(pwd)/output/cleanup-audit}"
-    REPORT_DIR="${REPORT_DIR:-$DEFAULT_REPORT_DIR}"
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
+    audit_set_defaults_if_unset "cleanup-audit" "cleanup-audit"
+
     LARGE_FILE_THRESHOLD_MB="${LARGE_FILE_THRESHOLD_MB:-100}"
     OLD_FILE_DAYS="${OLD_FILE_DAYS:-180}"
     DEEP_SCAN="${DEEP_SCAN:-false}"
-    NO_COLOR="${NO_COLOR:-false}"
-    OUTPUT_FILE="${OUTPUT_FILE:-}"
-    WRITE_NDJSON="${WRITE_NDJSON:-false}"
     ROOTS_OVERRIDE_RAW="${ROOTS_OVERRIDE_RAW:-}"
-    REDACT_PATHS_MODE="${REDACT_PATHS_MODE:-auto}"
-    REDACT_PATHS="${REDACT_PATHS:-false}"
+    HEATMAP="${HEATMAP:-false}"
     HEATMAP_EMIT_TOPN="${HEATMAP_EMIT_TOPN:-100}"
-
-    TIMESTAMP_FOR_FILENAME="${TIMESTAMP_FOR_FILENAME:-$(date +"%Y%m%d-%H%M%S")}"
-    ISO_TIMESTAMP="${ISO_TIMESTAMP:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
-    HOSTNAME_VAL="${HOSTNAME_VAL:-$(hostname 2>/dev/null || echo "unknown")}"
-    CURRENT_USER="${CURRENT_USER:-$(id -un 2>/dev/null || echo "${USER:-unknown}")}"
-    if [[ -z "${OS_VERSION:-}" ]]; then
-        if command -v sw_vers >/dev/null 2>&1; then
-            OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
-        else
-            OS_VERSION="unknown"
-        fi
-    fi
-    KERNEL_INFO="${KERNEL_INFO:-$(uname -a 2>/dev/null || echo "unknown")}"
-    if [[ -z "${RUN_ID:-}" ]] && command -v python3 >/dev/null 2>&1; then
-        RUN_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || true)
-    fi
-    if [[ -z "${RUN_ID:-}" ]] && command -v uuidgen >/dev/null 2>&1; then
-        RUN_ID=$(uuidgen 2>/dev/null || true)
-    fi
-    if [[ -z "${RUN_ID:-}" ]]; then
-        RUN_ID="${TIMESTAMP_FOR_FILENAME}-$$"
-    fi
+    HEATMAP_RENDER_TOPN="${HEATMAP_RENDER_TOPN:-50}"
 
     if [[ -z "${METADATA_NOTES+x}" ]]; then
         METADATA_NOTES=()
@@ -123,12 +100,24 @@ storage_parse_args() {
                 WRITE_NDJSON=true
                 shift
                 ;;
+            --heatmap)
+                HEATMAP=true
+                shift
+                ;;
             --heatmap-emit-topn)
                 if (($# < 2)); then
                     echo "Error: --heatmap-emit-topn requires an integer" >&2
                     exit 1
                 fi
                 HEATMAP_EMIT_TOPN="$2"
+                shift 2
+                ;;
+            --heatmap-render-topn)
+                if (($# < 2)); then
+                    echo "Error: --heatmap-render-topn requires an integer" >&2
+                    exit 1
+                fi
+                HEATMAP_RENDER_TOPN="$2"
                 shift 2
                 ;;
             --redact-paths)
@@ -170,6 +159,15 @@ storage_validate_and_resolve_paths() {
     if [[ ! "$HEATMAP_EMIT_TOPN" =~ ^[0-9]+$ ]] || (( HEATMAP_EMIT_TOPN <= 0 )); then
         echo "Error: --heatmap-emit-topn must be a positive integer" >&2
         exit 1
+    fi
+
+    if [[ ! "$HEATMAP_RENDER_TOPN" =~ ^[0-9]+$ ]] || (( HEATMAP_RENDER_TOPN <= 0 )); then
+        echo "Error: --heatmap-render-topn must be a positive integer" >&2
+        exit 1
+    fi
+
+    if $HEATMAP && ! $WRITE_NDJSON; then
+        WRITE_NDJSON=true
     fi
 
     if $WRITE_NDJSON; then
@@ -906,6 +904,37 @@ run_storage_audit() {
     fi
 }
 
+storage_render_heatmaps_if_requested() {
+    if ! $HEATMAP || [ -z "$NDJSON_FILE" ]; then
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Warning: --heatmap requested but python3 is unavailable; skipping heatmaps." >&2
+        append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"python3_missing_heatmaps_skipped\"}"
+        return 0
+    fi
+    if [ -n "${OSAUDIT_ROOT:-}" ]; then
+        REPO_ROOT="$OSAUDIT_ROOT"
+    else
+        REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    fi
+    if python3 "$REPO_ROOT/core/render_heatmaps.py" --ndjson "$NDJSON_FILE" --outdir "$REPORT_DIR" --render-topn "$HEATMAP_RENDER_TOPN"; then
+        run_id_safe=$(sanitize_run_id_for_filename "$RUN_ID")
+        candidate_treemap="$REPORT_DIR/heatmap-treemap-${run_id_safe}.html"
+        candidate_timing="$REPORT_DIR/heatmap-timing-${run_id_safe}.html"
+        if [ -f "$candidate_treemap" ] && [ -f "$candidate_timing" ]; then
+            echo "" >> "$REPORT_FILE"
+            echo "---" >> "$REPORT_FILE"
+            echo "" >> "$REPORT_FILE"
+            echo "## 🗺️ Visualizations" >> "$REPORT_FILE"
+            echo "- Treemap heatmap: \`$candidate_treemap\`" >> "$REPORT_FILE"
+            echo "- Timing heatmap: \`$candidate_timing\`" >> "$REPORT_FILE"
+        fi
+    else
+        append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"heatmap_render_failed\"}"
+    fi
+}
+
 storage_main() {
     storage_set_defaults_if_unset
     storage_parse_args "$@"
@@ -915,6 +944,7 @@ storage_main() {
     storage_write_report_header_if_needed
     storage_init_ndjson_if_needed
     run_storage_audit
+    storage_render_heatmaps_if_requested
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
