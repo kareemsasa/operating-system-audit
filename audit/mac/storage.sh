@@ -311,6 +311,7 @@ storage_main() {
     storage_write_report_header_if_needed
     storage_init_ndjson_if_needed
     run_storage_audit
+    emit_recommendations
     storage_render_heatmaps_if_requested
 }
 

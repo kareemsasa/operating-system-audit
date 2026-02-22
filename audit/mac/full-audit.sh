@@ -244,16 +244,8 @@ Based on the audit above, here's a recommended folder structure for your home di
 ~/Desktop/
 ├── (keep minimal — temporary workspace only)
 ```
-
-### Recommended Next Steps
-
-1. **Quick wins:** Empty Trash, delete .dmg/.pkg installers you no longer need
-2. **Downloads purge:** Sort through old downloads — delete or file away
-3. **Desktop triage:** Move Desktop items into proper Documents subfolders
-4. **Dev cleanup:** Remove unused `node_modules` with `npx npkill`
-5. **Duplicate cleanup:** Review flagged copies and remove extras
-6. **Ongoing habit:** Process Downloads weekly, keep Desktop under 10 items
 EOF
+emit_recommendations
 
 echo -e "\n${BOLD}${GREEN}"
 echo "╔══════════════════════════════════════════════════╗"

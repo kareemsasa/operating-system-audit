@@ -67,6 +67,39 @@ emit_large_files_bytes() {
     done | sort -nr -k1,1 -k2,2
 }
 
+# Appends Recommended Next Steps to REPORT_FILE only when relevant. Uses variables
+# from run_storage_audit. Skips section entirely if nothing triggers.
+emit_recommendations() {
+    local trash_bytes=$((${OVERVIEW_KB_TRASH:-0} * 1024))
+    local desktop_bytes=$((${OVERVIEW_KB_DESKTOP:-0} * 1024))
+    local dl_threshold="${RECOMMENDATIONS_DL_THRESHOLD:-50}"
+    local desktop_mb="${RECOMMENDATIONS_DESKTOP_MB:-50}"
+    local desktop_threshold=$((desktop_mb * 1024 * 1024))
+    local recs=()
+
+    (( trash_bytes > 0 )) && recs+=("Empty Trash to reclaim $(human_size_kb $((trash_bytes / 1024)))")
+    (( (${dmg_count:-0} + ${pkg_count:-0}) > 0 )) && recs+=("Delete installer artifacts (.dmg/.pkg)")
+    (( ${old_dl_count:-0} > 0 )) && recs+=("Review ${old_dl_count} stale files in Downloads (older than ${OLD_FILE_DAYS:-180} days)")
+    (( ${dl_file_count:-0} > dl_threshold )) && recs+=("Downloads has ${dl_file_count} files — consider triaging")
+    (( desktop_bytes > desktop_threshold )) && recs+=("Desktop is $(human_size_kb $((desktop_bytes / 1024))) — move items to Documents")
+    (( ${nm_count:-0} > 0 )) && recs+=("${nm_count} node_modules dirs found — run \`npx npkill\`")
+    (( ${venv_count:-0} > 0 )) && recs+=("${venv_count} Python venvs found — remove unused ones")
+    (( ${broken_links:-0} > 0 )) && recs+=("${broken_links} broken symlinks detected — review and remove")
+    (( ${thumbs_count:-0} > 0 )) && recs+=("${thumbs_count} Windows artifacts found — safe to delete")
+    (( ${large_count:-0} > 0 )) && recs+=("${large_count} files over ${LARGE_FILE_THRESHOLD_MB}MB — review for cleanup")
+
+    (( ${#recs[@]} == 0 )) && return 0
+
+    echo "" >> "$REPORT_FILE"
+    echo "### Recommended Next Steps" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    local i=1
+    for r in "${recs[@]}"; do
+        echo "$i. $r" >> "$REPORT_FILE"
+        (( i += 1 ))
+    done
+}
+
 run_storage_audit() {
     ds_count=0
     dmg_count=0
