@@ -388,11 +388,21 @@ run_storage_audit() {
     echo "| Folder | Size |" >> "$REPORT_FILE"
     echo "|--------|------|" >> "$REPORT_FILE"
 
+    OVERVIEW_KB_DOWNLOADS=0
+    OVERVIEW_KB_DESKTOP=0
+    OVERVIEW_KB_DOCUMENTS=0
+    OVERVIEW_KB_TRASH=0
     total_kb=0
     folder_index=0
     while IFS=$'\t' read -r kb folder; do
         [ -n "$folder" ] || continue
         kb=${kb:-0}
+        folder_name=$(basename "$folder")
+        case "$folder_name" in
+            Downloads) OVERVIEW_KB_DOWNLOADS=$kb ;;
+            Desktop) OVERVIEW_KB_DESKTOP=$kb ;;
+            Documents) OVERVIEW_KB_DOCUMENTS=$kb ;;
+        esac
         folder_bytes=$((kb * 1024))
         total_kb=$((total_kb + kb))
         folder_ndjson_path=$(redact_path_for_ndjson "$folder")
@@ -401,12 +411,38 @@ run_storage_audit() {
         if (( folder_index >= 20 )); then
             continue
         fi
-        folder_name=$(basename "$folder")
         size=$(human_size_kb "$kb")
         echo -e "  ${CYAN}$folder_name${NC}: $size"
         echo "| \`$folder_name\` | $size |" >> "$REPORT_FILE"
         folder_index=$((folder_index + 1))
     done < <(du -sk "$HOME_DIR"/*/ 2>/dev/null | sort -nr || true)
+
+    # Capture dotdirs (e.g. .cursor, .vscode, .npm, .nvm) for overview and NDJSON reuse; .Trash done separately
+    dotdir_kb=0
+    while IFS=$'\t' read -r kb folder; do
+        [ -n "$folder" ] || continue
+        kb=${kb:-0}
+        folder_name=$(basename "$folder")
+        dotdir_kb=$((dotdir_kb + kb))
+        folder_bytes=$((kb * 1024))
+        folder_ndjson_path=$(redact_path_for_ndjson "$folder")
+        printf '%s\t%s\n' "$folder_bytes" "$folder_ndjson_path" >> "$TOP_PATHS_FILE"
+    done < <(du -sk "$HOME_DIR"/.??* 2>/dev/null | awk -v home="$HOME_DIR" -F'\t' '$2 != home "/.Trash" {print}' | sort -nr || true)
+    total_kb=$((total_kb + dotdir_kb))
+
+    # Add Trash to total and stash for NDJSON reuse (single du -sk)
+    if [ -d "$HOME_DIR/.Trash" ]; then
+        trash_kb=$(du -sk "$HOME_DIR/.Trash" 2>/dev/null | awk '{print $1}') || true
+        trash_kb=${trash_kb:-0}
+        OVERVIEW_KB_TRASH=$trash_kb
+        total_kb=$((total_kb + trash_kb))
+    fi
+
+    if (( dotdir_kb > 0 )) && (( folder_index < 20 )); then
+        echo -e "  ${CYAN}Hidden directories${NC}: $(human_size_kb "$dotdir_kb")"
+        echo "| \`Hidden directories\` | $(human_size_kb "$dotdir_kb") |" >> "$REPORT_FILE"
+    fi
+
     emit_top_items_ndjson "top_paths" "$TOP_PATHS_FILE" "$HEATMAP_EMIT_TOPN"
 
     total_size=$(human_size_kb "$total_kb")
@@ -415,6 +451,72 @@ run_storage_audit() {
     home_bytes=$((total_kb * 1024))
     section_end_ms=$(now_ms)
     emit_timing "disk_usage_overview" "$section_start_ms" "$section_end_ms"
+
+    # =============================================================================
+    # DOWNLOADS COMBINED SCAN (single find pass for Junk zip + Downloads section)
+    # =============================================================================
+    downloads_scan_start_ms=$(now_ms)
+    dl_file_count=0
+    old_dl_count=0
+    old_dl_bytes=0
+    zip_dl_count=0
+    if [ -d "$HOME_DIR/Downloads" ]; then
+        old_threshold_sec=$(($(date +%s) - (OLD_FILE_DAYS * 86400))) || true
+        old_threshold_sec=${old_threshold_sec:-0}
+        while IFS= read -r line; do
+            case "$line" in
+                dl_file_count:*) dl_file_count="${line#*:}" ;;
+                old_dl_count:*) old_dl_count="${line#*:}" ;;
+                old_dl_bytes:*) old_dl_bytes="${line#*:}" ;;
+                zip_dl_count:*) zip_dl_count="${line#*:}" ;;
+                ext:*)
+                    rest="${line#*:}"
+                    ext_name="${rest%%:*}"
+                    rest="${rest#*:}"
+                    ext_count="${rest%%:*}"
+                    ext_bytes="${rest#*:}"
+                    ext_name=$(echo "$ext_name" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
+                    if [ -n "$ext_name" ]; then
+                        eval "ext_${ext_name}_count=${ext_count:-0}"
+                        eval "ext_${ext_name}_bytes=${ext_bytes:-0}"
+                    fi
+                    ;;
+            esac
+        done < <(
+            find "$HOME_DIR/Downloads" -type f 2>/dev/null | while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                bytes=$(stat -f%z "$f" 2>/dev/null || echo 0)
+                atime=$(stat -f%a "$f" 2>/dev/null || echo 0)
+                base=$(basename "$f")
+                ext="${base##*.}"
+                [[ "$ext" == "$base" ]] && ext=""
+                ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+                printf '%s\t%s\t%s\n' "$bytes" "$atime" "$ext"
+            done | awk -v old_thresh="$old_threshold_sec" '
+                BEGIN { total=0; old_count=0; old_bytes=0; zip_count=0 }
+                {
+                    bytes=$1+0; atime=$2+0; ext=$3
+                    total++
+                    if (atime>0 && atime<old_thresh) { old_count++; old_bytes+=bytes }
+                    ext_count[ext]++; ext_bytes[ext]+=bytes
+                    if (ext=="zip") zip_count++
+                }
+                END {
+                    print "dl_file_count:"total
+                    print "old_dl_count:"old_count
+                    print "old_dl_bytes:"old_bytes
+                    print "zip_dl_count:"zip_count
+                    for (e in ext_count) if (e!="") print "ext:"e":"ext_count[e]":"ext_bytes[e]
+                }
+            '
+        ) || true
+    fi
+    dl_file_count=${dl_file_count:-0}
+    old_dl_count=${old_dl_count:-0}
+    old_dl_bytes=${old_dl_bytes:-0}
+    zip_dl_count=${zip_dl_count:-0}
+    downloads_scan_end_ms=$(now_ms)
+    emit_timing "downloads_scan" "$downloads_scan_start_ms" "$downloads_scan_end_ms"
 
     # =============================================================================
     # 2. LARGE FILES (> threshold)
@@ -517,8 +619,6 @@ run_storage_audit() {
     echo "- **\`.pkg\` installers:** $pkg_count" >> "$REPORT_FILE"
 
     if [ -d "$HOME_DIR/Downloads" ]; then
-        zip_dl_count=$({ find "$HOME_DIR/Downloads" -type f -name "*.zip" 2>/dev/null || true; } | count_lines)
-        zip_dl_count=${zip_dl_count:-0}
         zip_note=""
     else
         zip_dl_count=0
@@ -546,10 +646,7 @@ run_storage_audit() {
     section_header "📥 Downloads Folder Audit"
 
     if [ -d "$HOME_DIR/Downloads" ]; then
-        dl_size=$(du -sh "$HOME_DIR/Downloads" 2>/dev/null | cut -f1) || true
-        dl_size=${dl_size:-0B}
-        dl_file_count=$({ find "$HOME_DIR/Downloads" -type f 2>/dev/null || true; } | count_lines)
-        dl_file_count=${dl_file_count:-0}
+        dl_size=$(human_size_kb "${OVERVIEW_KB_DOWNLOADS:-0}")
         echo -e "  Total size: ${BOLD}$dl_size${NC} ($dl_file_count files)"
         echo "**Total size:** $dl_size ($dl_file_count files)" >> "$REPORT_FILE"
 
@@ -559,28 +656,24 @@ run_storage_audit() {
         echo "|------|-------|------------|" >> "$REPORT_FILE"
 
         for ext in pdf dmg zip pkg png jpg jpeg gif mp4 mov mp3 doc docx xls xlsx csv txt html js py sh; do
-            count=$({ find "$HOME_DIR/Downloads" -iname "*.$ext" -type f 2>/dev/null || true; } | count_lines)
-            count=${count:-0}
+            eval "count=\${ext_${ext}_count:-0}"
             if (( count > 0 )); then
-                ext_size=$({ find "$HOME_DIR/Downloads" -iname "*.$ext" -type f -exec du -ch {} + 2>/dev/null || true; } | awk 'END{print $1}') || true
-                ext_size=${ext_size:-0B}
+                eval "ext_bytes=\${ext_${ext}_bytes:-0}"
+                ext_kb=$((ext_bytes / 1024))
+                ext_size=$(human_size_kb "$ext_kb")
                 echo -e "    .$ext: ${YELLOW}$count files${NC} ($ext_size)"
                 echo "| \`.$ext\` | $count | $ext_size |" >> "$REPORT_FILE"
             fi
         done
 
         echo -e "\n  ${CYAN}Old files (not accessed in ${OLD_FILE_DAYS}+ days):${NC}"
-        old_dl_count=$({ find "$HOME_DIR/Downloads" -type f -atime +${OLD_FILE_DAYS} 2>/dev/null || true; } | count_lines)
-        old_dl_count=${old_dl_count:-0}
         echo -e "    Count: ${YELLOW}$old_dl_count${NC}"
         echo -e "\n### Stale Downloads (${OLD_FILE_DAYS}+ days since last access)\n" >> "$REPORT_FILE"
         echo "**Count:** $old_dl_count files" >> "$REPORT_FILE"
 
         if (( old_dl_count > 0 )); then
-            old_dl_size=$({ find "$HOME_DIR/Downloads" -type f -atime +${OLD_FILE_DAYS} -exec du -ch {} + 2>/dev/null || true; } | awk 'END{print $1}') || true
-            old_dl_size=${old_dl_size:-0B}
-            old_dl_bytes=$({ find "$HOME_DIR/Downloads" -type f -atime +${OLD_FILE_DAYS} 2>/dev/null || true; } | sum_bytes_from_stdin) || true
-            old_dl_bytes=${old_dl_bytes:-0}
+            old_dl_kb=$((${old_dl_bytes:-0} / 1024))
+            old_dl_size=$(human_size_kb "$old_dl_kb")
             echo -e "    Total size: ${YELLOW}$old_dl_size${NC}"
             echo "**Total size:** $old_dl_size" >> "$REPORT_FILE"
         fi
@@ -597,7 +690,7 @@ run_storage_audit() {
     section_header "🖥️ Desktop Audit"
 
     if [ -d "$HOME_DIR/Desktop" ]; then
-        desktop_size=$(du -sh "$HOME_DIR/Desktop" 2>/dev/null | cut -f1)
+        desktop_size=$(human_size_kb "${OVERVIEW_KB_DESKTOP:-0}")
         desktop_count=$({ find "$HOME_DIR/Desktop" -maxdepth 1 -not -name "." -not -name "cleanup-audit" 2>/dev/null || true; } | count_lines)
         desktop_count=${desktop_count:-0}
         echo -e "  Items on Desktop: ${BOLD}$desktop_count${NC} ($desktop_size)"
@@ -633,7 +726,7 @@ run_storage_audit() {
     section_header "📁 Documents Audit"
 
     if [ -d "$HOME_DIR/Documents" ]; then
-        docs_size=$(du -sh "$HOME_DIR/Documents" 2>/dev/null | cut -f1)
+        docs_size=$(human_size_kb "${OVERVIEW_KB_DOCUMENTS:-0}")
         docs_folder_count=$({ find "$HOME_DIR/Documents" -maxdepth 1 -type d -not -name "." -not -path "$HOME_DIR/Documents" 2>/dev/null || true; } | count_lines)
         docs_folder_count=${docs_folder_count:-0}
         docs_file_count=$({ find "$HOME_DIR/Documents" -maxdepth 1 -type f 2>/dev/null || true; } | count_lines)
@@ -647,14 +740,16 @@ run_storage_audit() {
         echo -e "\n### Top Folders by Size\n" >> "$REPORT_FILE"
         echo "| Folder | Size |" >> "$REPORT_FILE"
         echo "|--------|------|" >> "$REPORT_FILE"
-        while IFS=$'\t' read -r size folder; do
+        while IFS=$'\t' read -r kb folder; do
+            [ -n "$folder" ] || continue
+            kb=${kb:-0}
+            folder_bytes=$((kb * 1024))
             fname=$(basename "$folder")
-            folder_bytes=$(dir_bytes "$folder")
-            folder_bytes=${folder_bytes:-0}
+            size=$(human_size_kb "$kb")
             printf '%s\t%s\n' "$folder_bytes" "$folder" >> "$TOP_DOCUMENTS_FOLDERS_FILE"
             echo -e "    📁 $fname: $size"
             echo "| \`$fname\` | $size |" >> "$REPORT_FILE"
-        done < <(du -sh "$HOME_DIR/Documents"/*/ 2>/dev/null | sort -hr | sed -n '1,15p')
+        done < <(du -sk "$HOME_DIR/Documents"/*/ 2>/dev/null | sort -nr -k1,1 | sed -n '1,15p')
 
         if (( docs_file_count > 0 )); then
             echo -e "\n  ${CYAN}Loose files in Documents root:${NC}"
@@ -698,9 +793,10 @@ run_storage_audit() {
         echo "| Location | Size |" >> "$REPORT_FILE"
         echo "|----------|------|" >> "$REPORT_FILE"
         for nm in "${nm_dirs[@]}"; do
-            nm_size=$(du -sh "$nm" 2>/dev/null | cut -f1)
-            nm_bytes=$(dir_bytes "$nm")
-            nm_bytes=${nm_bytes:-0}
+            nm_kb=$(du -sk "$nm" 2>/dev/null | awk '{print $1}') || true
+            nm_kb=${nm_kb:-0}
+            nm_bytes=$((nm_kb * 1024))
+            nm_size=$(human_size_kb "$nm_kb")
             printf '%s\t%s\n' "$nm_bytes" "$nm" >> "$TOP_NODE_MODULES_FILE"
             rel="${nm#$HOME_DIR/}"
             echo -e "    ${CYAN}$nm_size${NC}  $rel"
@@ -777,8 +873,8 @@ run_storage_audit() {
 
     TRASH_DIR="$HOME_DIR/.Trash"
     if [ -d "$TRASH_DIR" ]; then
-        trash_size="$(soft_out du -sh "$TRASH_DIR" | cut -f1)"
-        trash_size=${trash_size:-0B}
+        trash_kb=${OVERVIEW_KB_TRASH:-0}
+        trash_size=$(human_size_kb "$trash_kb")
         trash_count="$(soft_out find "$TRASH_DIR" -mindepth 1 -maxdepth 1 | count_lines)"
         trash_count=${trash_count:-0}
         echo -e "  Trash size: ${BOLD}$trash_size${NC} ($trash_count files)"
@@ -795,10 +891,10 @@ run_storage_audit() {
     emit_timing "trash" "$trash_start_ms" "$trash_end_ms"
 
     if [ -n "$NDJSON_FILE" ]; then
-        downloads_bytes=$(dir_bytes "$HOME_DIR/Downloads")
-        desktop_bytes=$(dir_bytes "$HOME_DIR/Desktop")
-        documents_bytes=$(dir_bytes "$HOME_DIR/Documents")
-        trash_bytes=$(dir_bytes "$HOME_DIR/.Trash")
+        downloads_bytes=$((${OVERVIEW_KB_DOWNLOADS:-0} * 1024))
+        desktop_bytes=$((${OVERVIEW_KB_DESKTOP:-0} * 1024))
+        documents_bytes=$((${OVERVIEW_KB_DOCUMENTS:-0} * 1024))
+        trash_bytes=$((${OVERVIEW_KB_TRASH:-0} * 1024))
         append_ndjson_line "{\"type\":\"summary\",\"run_id\":$(json_escape "$RUN_ID"),\"home_bytes\":${home_bytes:-0},\"downloads_bytes\":${downloads_bytes:-0},\"desktop_bytes\":${desktop_bytes:-0},\"documents_bytes\":${documents_bytes:-0},\"trash_bytes\":${trash_bytes:-0}}"
         append_ndjson_line "{\"type\":\"counts\",\"run_id\":$(json_escape "$RUN_ID"),\"large_files\":${large_count:-0},\"ds_store\":${ds_count:-0},\"thumbs_db\":${thumbs_db_count:-0},\"desktop_ini\":${desktop_ini_count:-0},\"windows_artifacts\":${thumbs_count:-0},\"zip_downloads\":${zip_dl_count:-0},\"dmg\":${dmg_count:-0},\"pkg\":${pkg_count:-0},\"broken_symlinks\":${broken_links:-0},\"node_modules\":${nm_count:-0},\"venv_cache\":${venv_count:-0},\"venv_dirs\":${venv_dirs_count:-0},\"pycache_dirs\":${pycache_dirs_count:-0},\"git_repos\":${git_count:-0},\"potential_duplicates\":${dup_found:-0},\"downloads_stale\":${old_dl_count:-0}}"
         append_ndjson_line "{\"type\":\"junk_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"ds_store_count\":${ds_count:-0},\"dmg_count\":${dmg_count:-0},\"pkg_count\":${pkg_count:-0},\"zip_downloads_count\":${zip_dl_count:-0},\"windows_artifacts_count\":${thumbs_count:-0},\"broken_symlinks_count\":${broken_links:-0}}"
