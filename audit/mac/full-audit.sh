@@ -122,49 +122,22 @@ if [[ ! "$OLD_FILE_DAYS" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-if $WRITE_NDJSON; then
-    case "$REDACT_PATHS_MODE" in
-        on) REDACT_PATHS=true ;;
-        off) REDACT_PATHS=false ;;
-        auto) REDACT_PATHS=true ;;
-    esac
-fi
-
-if [ -n "$OUTPUT_FILE" ]; then
-    REPORT_FILE="$OUTPUT_FILE"
-    REPORT_DIR=$(dirname "$REPORT_FILE")
-else
-    REPORT_FILE="$REPORT_DIR/full-audit-$TIMESTAMP_FOR_FILENAME.md"
+_ndjson_requested=$WRITE_NDJSON
+audit_resolve_output_paths "full-audit"
+if $_ndjson_requested && ! $WRITE_NDJSON; then
+    METADATA_NOTES+=("NDJSON disabled because python3 is unavailable")
 fi
 
 # --- Setup ---
 mkdir -p "$REPORT_DIR"
-SOFT_FAILURE_LOG="$REPORT_DIR/.full-audit-soft-failures-$TIMESTAMP_FOR_FILENAME.log"
+SOFT_FAILURE_LOG="${SOFT_FAILURE_LOG:-$REPORT_DIR/.full-audit-soft-failures-$TIMESTAMP_FOR_FILENAME.log}"
 : > "$SOFT_FAILURE_LOG"
-TOP_NODE_MODULES_FILE="$REPORT_DIR/.full-audit-top-node-modules-$TIMESTAMP_FOR_FILENAME.tsv"
+TOP_NODE_MODULES_FILE="${TOP_NODE_MODULES_FILE:-$REPORT_DIR/.full-audit-top-node-modules-$TIMESTAMP_FOR_FILENAME.tsv}"
 : > "$TOP_NODE_MODULES_FILE"
-TOP_DOCUMENTS_FOLDERS_FILE="$REPORT_DIR/.full-audit-top-doc-folders-$TIMESTAMP_FOR_FILENAME.tsv"
+TOP_DOCUMENTS_FOLDERS_FILE="${TOP_DOCUMENTS_FOLDERS_FILE:-$REPORT_DIR/.full-audit-top-doc-folders-$TIMESTAMP_FOR_FILENAME.tsv}"
 : > "$TOP_DOCUMENTS_FOLDERS_FILE"
-TOP_PATHS_FILE="$REPORT_DIR/.full-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv"
+TOP_PATHS_FILE="${TOP_PATHS_FILE:-$REPORT_DIR/.full-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv}"
 : > "$TOP_PATHS_FILE"
-
-NDJSON_FILE=""
-if $WRITE_NDJSON; then
-    report_base="${REPORT_FILE%.*}"
-    if [ "$report_base" = "$REPORT_FILE" ]; then
-        NDJSON_FILE="${REPORT_FILE}.ndjson"
-    else
-        NDJSON_FILE="${report_base}.ndjson"
-    fi
-fi
-
-if $WRITE_NDJSON && ! command -v python3 >/dev/null 2>&1; then
-    echo "Warning: --ndjson requested but python3 is unavailable; disabling NDJSON output." >&2
-    METADATA_NOTES+=("NDJSON disabled because python3 is unavailable")
-    WRITE_NDJSON=false
-    REDACT_PATHS=false
-    NDJSON_FILE=""
-fi
 
 source "$(dirname "$0")/lib/common.sh"
 
@@ -217,6 +190,7 @@ source "$(dirname "$0")/config.sh"
 source "$(dirname "$0")/execution.sh"
 source "$(dirname "$0")/persistence.sh"
 storage_build_scan_roots
+storage_prepare_files_and_common
 for note in "${NDJSON_PENDING_NOTES[@]+"${NDJSON_PENDING_NOTES[@]}"}"; do
     if [ -n "$NDJSON_FILE" ]; then
         append_ndjson_line "{\"type\":\"note\",\"run_id\":$(json_escape "$RUN_ID"),\"message\":$(json_escape "$note")}"
