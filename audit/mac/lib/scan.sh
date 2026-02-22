@@ -435,7 +435,7 @@ run_storage_audit() {
 
     if [ -d "$HOME_DIR/Desktop" ]; then
         desktop_size=$(human_size_kb "${OVERVIEW_KB_DESKTOP:-0}")
-        desktop_count=$({ find "$HOME_DIR/Desktop" -maxdepth 1 -not -name "." -not -name "cleanup-audit" 2>/dev/null || true; } | count_lines)
+        desktop_count=$({ find "$HOME_DIR/Desktop" -maxdepth 1 -not -name "." -not -name "cleanup-audit" -not -name "storage-audit" 2>/dev/null || true; } | count_lines)
         desktop_count=${desktop_count:-0}
         echo -e "  Items on Desktop: ${BOLD}$desktop_count${NC} ($desktop_size)"
         echo "**Items on Desktop:** $desktop_count ($desktop_size)" >> "$REPORT_FILE"
@@ -446,7 +446,7 @@ run_storage_audit() {
             while IFS= read -r item; do
                 [ -z "$item" ] && continue
                 name=$(basename "$item")
-                [ "$name" = "cleanup-audit" ] && continue
+                [ "$name" = "cleanup-audit" ] || [ "$name" = "storage-audit" ] && continue
                 isize=$(du -sh "$item" 2>/dev/null | cut -f1)
                 if [ -d "$item" ]; then
                     echo -e "    📁 $name ($isize)"

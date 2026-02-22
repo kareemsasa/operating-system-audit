@@ -31,7 +31,7 @@ EOF
 
 storage_set_defaults_if_unset() {
     source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
-    audit_set_defaults_if_unset "cleanup-audit"
+    audit_set_defaults_if_unset "storage-audit"
 
     LARGE_FILE_THRESHOLD_MB="${LARGE_FILE_THRESHOLD_MB:-100}"
     OLD_FILE_DAYS="${OLD_FILE_DAYS:-180}"
@@ -171,7 +171,7 @@ storage_validate_and_resolve_paths() {
     fi
 
     source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
-    audit_resolve_output_paths "cleanup-audit"
+    audit_resolve_output_paths "storage-audit"
     if ! command -v python3 >/dev/null 2>&1 && $HEATMAP; then
         METADATA_NOTES+=("NDJSON disabled because python3 is unavailable")
     fi
@@ -210,13 +210,13 @@ storage_build_scan_roots() {
 
 storage_prepare_files_and_common() {
     mkdir -p "$REPORT_DIR"
-    SOFT_FAILURE_LOG="${SOFT_FAILURE_LOG:-$REPORT_DIR/.cleanup-audit-soft-failures-$TIMESTAMP_FOR_FILENAME.log}"
+    SOFT_FAILURE_LOG="${SOFT_FAILURE_LOG:-$REPORT_DIR/.storage-audit-soft-failures-$TIMESTAMP_FOR_FILENAME.log}"
     : > "$SOFT_FAILURE_LOG"
-    TOP_NODE_MODULES_FILE="${TOP_NODE_MODULES_FILE:-$REPORT_DIR/.cleanup-audit-top-node-modules-$TIMESTAMP_FOR_FILENAME.tsv}"
+    TOP_NODE_MODULES_FILE="${TOP_NODE_MODULES_FILE:-$REPORT_DIR/.storage-audit-top-node-modules-$TIMESTAMP_FOR_FILENAME.tsv}"
     : > "$TOP_NODE_MODULES_FILE"
-    TOP_DOCUMENTS_FOLDERS_FILE="${TOP_DOCUMENTS_FOLDERS_FILE:-$REPORT_DIR/.cleanup-audit-top-doc-folders-$TIMESTAMP_FOR_FILENAME.tsv}"
+    TOP_DOCUMENTS_FOLDERS_FILE="${TOP_DOCUMENTS_FOLDERS_FILE:-$REPORT_DIR/.storage-audit-top-doc-folders-$TIMESTAMP_FOR_FILENAME.tsv}"
     : > "$TOP_DOCUMENTS_FOLDERS_FILE"
-    TOP_PATHS_FILE="${TOP_PATHS_FILE:-$REPORT_DIR/.cleanup-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv}"
+    TOP_PATHS_FILE="${TOP_PATHS_FILE:-$REPORT_DIR/.storage-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv}"
     : > "$TOP_PATHS_FILE"
 
     # Set shared variables before sourcing common library.
@@ -263,7 +263,7 @@ storage_init_ndjson_if_needed() {
     if $DEEP_SCAN && [ -z "$ROOTS_OVERRIDE_RAW" ]; then
         scan_mode="deep"
     fi
-    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"home-cleanup-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"storage-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
     append_ndjson_line "{\"type\":\"scan\",\"run_id\":$(json_escape "$RUN_ID"),\"mode\":$(json_escape "$scan_mode"),\"threshold_mb\":$LARGE_FILE_THRESHOLD_MB,\"old_days\":$OLD_FILE_DAYS,\"redact_paths\":$([ "$REDACT_PATHS" = true ] && echo true || echo false)}"
     for note in "${NDJSON_PENDING_NOTES[@]+"${NDJSON_PENDING_NOTES[@]}"}"; do
         append_ndjson_line "{\"type\":\"note\",\"run_id\":$(json_escape "$RUN_ID"),\"message\":$(json_escape "$note")}"

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Render cleanup-audit heatmaps (HTML-only, stdlib-only)."
+        description="Render storage-audit heatmaps (HTML-only, stdlib-only)."
     )
     parser.add_argument("--ndjson", required=True, help="Path to NDJSON input file")
     parser.add_argument("--outdir", required=True, help="Directory for HTML output")
