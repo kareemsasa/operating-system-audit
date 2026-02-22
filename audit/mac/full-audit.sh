@@ -213,38 +213,6 @@ if ! run_persistence_audit; then
     append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"persistence_audit_failed\"}"
 fi
 
-section_header "📋 Suggested Organization Plan"
-
-cat >> "$REPORT_FILE" << 'EOF'
-Based on the audit above, here's a recommended folder structure for your home directory:
-
-```
-~/Documents/
-├── Work/
-│   ├── RCG/
-│   │   ├── PowerHub/
-│   │   ├── Navitas/
-│   │   ├── Milford-Mining/
-│   │   └── USMED-Equip/
-│   └── Contracts-Invoices/
-├── Projects/
-│   ├── Arachne/
-│   └── Personal-Dev/
-├── Finance/
-│   ├── Taxes/
-│   └── Receipts/
-├── Education/
-│   └── Certifications/
-└── Archive/
-    └── (older files, organized by year)
-
-~/Downloads/
-├── (keep clean — process files then move or delete)
-
-~/Desktop/
-├── (keep minimal — temporary workspace only)
-```
-EOF
 emit_recommendations
 
 echo -e "\n${BOLD}${GREEN}"
