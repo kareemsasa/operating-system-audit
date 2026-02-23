@@ -41,13 +41,19 @@ var probeExpectedExitCodes = map[string]map[int]struct{}{
 
 // Topic for grouping (probe prefix -> display name). Order = display priority.
 var probeTopic = map[string]string{
-	"config.":     "Security",
-	"network.":    "Network",
-	"identity.":   "Identity",
-	"storage.":    "Storage",
-	"execution.":  "Execution",
+	"config.":      "Security",
+	"network.":     "Network",
+	"identity.":    "Identity",
+	"storage.":     "Storage",
+	"execution.":   "Execution",
 	"persistence.": "Persistence",
 }
+
+// TopicOrder defines display priority for grouping probe failures.
+var TopicOrder = []string{"Security", "Network", "Identity", "Storage", "Execution", "Persistence", "Other"}
+
+// SeverityOrder maps severity to sort priority (lower = higher priority).
+var SeverityOrder = map[string]int{"high": 0, "medium": 1, "low": 2}
 
 // ProbeSeverity returns the severity for a probe: "high", "medium", or "low".
 func ProbeSeverity(probe string) string {
@@ -107,4 +113,17 @@ func ExpectedState(probe string, exitCodes map[string]any) string {
 		return "mixed"
 	}
 	return "unexpected"
+}
+
+// ExpectedSuffix returns display suffix: " (expected)" | " (mixed)" | "".
+func ExpectedSuffix(probe string, exitCodes map[string]any) string {
+	state := ExpectedState(probe, exitCodes)
+	switch state {
+	case "expected":
+		return " (expected)"
+	case "mixed":
+		return " (mixed)"
+	default:
+		return ""
+	}
 }

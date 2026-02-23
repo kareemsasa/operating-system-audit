@@ -50,6 +50,22 @@ func ReadNDJSON(path string) ([]Row, error) {
 	return rows, nil
 }
 
+// CollectWarningCodes collects unique warning identifiers from all warning rows.
+func CollectWarningCodes(rows []Row) map[string]struct{} {
+	codes := make(map[string]struct{})
+	for _, row := range rows {
+		if t, _ := row["type"].(string); t != "warning" {
+			continue
+		}
+		if c, ok := row["code"].(string); ok {
+			codes[c] = struct{}{}
+		} else if _, ok := row["soft_failures"]; ok {
+			codes["soft_failures"] = struct{}{}
+		}
+	}
+	return codes
+}
+
 // GroupByType groups rows by their "type" field. For types with multiple rows,
 // keeps the last one (most complete).
 func GroupByType(rows []Row) map[string]Row {

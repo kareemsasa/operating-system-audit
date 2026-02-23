@@ -460,10 +460,10 @@ func runDiff(args []string) int {
 		return 1
 	}
 
-	_ = diff.GroupByType(baselineRows)
-	_ = diff.GroupByType(currentRows)
-
-	fmt.Printf("Parsed %d baseline rows, %d current rows\n", len(baselineRows), len(currentRows))
+	hasDeltas := diff.Run(baselineRows, currentRows)
+	if hasDeltas {
+		return 2
+	}
 	return 0
 }
 
