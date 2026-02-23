@@ -138,6 +138,7 @@ TOP_DOCUMENTS_FOLDERS_FILE="${TOP_DOCUMENTS_FOLDERS_FILE:-$REPORT_DIR/.full-audi
 : > "$TOP_DOCUMENTS_FOLDERS_FILE"
 TOP_PATHS_FILE="${TOP_PATHS_FILE:-$REPORT_DIR/.full-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv}"
 : > "$TOP_PATHS_FILE"
+PROBE_FAILURES_FILE="${REPORT_DIR}/.probe-failures-$TIMESTAMP_FOR_FILENAME-$$.tmp"
 
 source "$(dirname "$0")/lib/common.sh"
 
@@ -163,6 +164,7 @@ cat > "$REPORT_FILE" << EOF
 - **Current user:** $CURRENT_USER
 - **macOS product version:** $OS_VERSION
 - **Kernel:** \`$KERNEL_INFO\`
+- **PATH:** \`$(get_audit_path_for_output)\`
 EOF
 for note in "${METADATA_NOTES[@]+"${METADATA_NOTES[@]}"}"; do
     echo "- **Note:** $note" >> "$REPORT_FILE"
@@ -178,7 +180,7 @@ if [ -n "$NDJSON_FILE" ]; then
     if $DEEP_SCAN && [ -z "$ROOTS_OVERRIDE_RAW" ]; then
         scan_mode="deep"
     fi
-    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"full-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"full-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
     append_ndjson_line "{\"type\":\"scan\",\"run_id\":$(json_escape "$RUN_ID"),\"mode\":$(json_escape "$scan_mode"),\"threshold_mb\":$LARGE_FILE_THRESHOLD_MB,\"old_days\":$OLD_FILE_DAYS,\"redact_paths\":$([ "$REDACT_PATHS" = true ] && echo true || echo false)}"
     STORAGE_NDJSON_INITIALIZED=true
 fi
@@ -226,6 +228,7 @@ if [ -n "$NDJSON_FILE" ]; then
     echo -e "NDJSON summary saved to:"
     echo -e "  ${CYAN}$NDJSON_FILE${NC}"
 fi
+emit_probe_failures_summary
 soft_failures=0
 if [ -f "$SOFT_FAILURE_LOG" ]; then
     soft_failures=$(wc -l < "$SOFT_FAILURE_LOG" | tr -d ' ' || true)

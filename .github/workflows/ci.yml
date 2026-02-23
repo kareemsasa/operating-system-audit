@@ -53,6 +53,9 @@ jobs:
             echo "full not available on this OS; skipping run smoke."
           fi
 
+      - name: Probe diff formatting test
+        run: python3 tests/test_probe_diff.py
+
   mac-smoke:
     runs-on: macos-latest
     steps:

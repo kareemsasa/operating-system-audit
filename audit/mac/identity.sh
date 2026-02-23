@@ -77,7 +77,7 @@ identity_init_ndjson_if_needed() {
         return 0
     fi
     : > "$NDJSON_FILE"
-    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"identity-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"identity-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
     IDENTITY_NDJSON_INITIALIZED=true
 }
 
@@ -100,7 +100,7 @@ run_identity_audit() {
         uid="$(soft_out dscl . -read "/Users/$username" UniqueID | awk '/UniqueID:/ {print $2; exit}')"
         uid="${uid:-0}"
         admin=false
-        if dseditgroup -o checkmember -m "$username" admin >/dev/null 2>&1; then
+        if soft_probe_check "identity.dseditgroup_checkmember" dseditgroup -o checkmember -m "$username" admin 2>/dev/null; then
             admin=true
         fi
         echo "| \`$username\` | $uid | $admin |" >> "$REPORT_FILE"
@@ -111,7 +111,7 @@ run_identity_audit() {
             local_users_items="${local_users_items},${item}"
         fi
         local_users_count=$((local_users_count + 1))
-    done < <(soft_out dscl . list /Users | sort)
+    done < <(soft_out_probe "identity.dscl_list_users" dscl . list /Users | sort)
     append_ndjson_line "{\"type\":\"local_users\",\"run_id\":$(json_escape "$RUN_ID"),\"count\":${local_users_count:-0},\"items\":[${local_users_items}]}"
     section_end_ms=$(now_ms)
     emit_timing "local_users" "$section_start_ms" "$section_end_ms"
@@ -199,6 +199,7 @@ identity_main() {
     identity_write_report_header_if_needed
     identity_init_ndjson_if_needed
     run_identity_audit
+    emit_probe_failures_summary
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

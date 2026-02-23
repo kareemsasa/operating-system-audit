@@ -77,7 +77,7 @@ persistence_init_ndjson_if_needed() {
         return 0
     fi
     : > "$NDJSON_FILE"
-    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"persistence-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"persistence-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
     PERSISTENCE_NDJSON_INITIALIZED=true
 }
 
@@ -159,7 +159,7 @@ run_persistence_audit() {
                 kext_items="${kext_items},${item}"
             fi
             third_party_kexts_count=$((third_party_kexts_count + 1))
-        done < <(soft_out kmutil showloaded | awk 'NR>1 {print $7 "\t" $5}')
+        done < <(soft_out_probe "persistence.kmutil_showloaded" kmutil showloaded | awk 'NR>1 {print $7 "\t" $5}')
     else
         while IFS=$'\t' read -r bundle_id version; do
             [ -n "$bundle_id" ] || continue
@@ -173,10 +173,10 @@ run_persistence_audit() {
                 kext_items="${kext_items},${item}"
             fi
             third_party_kexts_count=$((third_party_kexts_count + 1))
-        done < <(soft_out kextstat | awk 'NR>1 {print $6 "\t" $4}')
+        done < <(soft_out_probe "persistence.kextstat" kextstat | awk 'NR>1 {print $6 "\t" $4}')
     fi
     echo "- Third-party kernel extensions: **${third_party_kexts_count:-0}**" >> "$REPORT_FILE"
-    sysext_out="$(soft_out systemextensionsctl list)"
+    sysext_out="$(soft_out_probe "persistence.systemextensionsctl_list" systemextensionsctl list)"
     if [ -n "$sysext_out" ]; then
         echo "- System extensions output captured (best effort)." >> "$REPORT_FILE"
     else
@@ -218,6 +218,7 @@ persistence_main() {
     persistence_write_report_header_if_needed
     persistence_init_ndjson_if_needed
     run_persistence_audit
+    emit_probe_failures_summary
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

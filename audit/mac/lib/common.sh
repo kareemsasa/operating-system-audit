@@ -92,6 +92,15 @@ append_ndjson_line() {
     echo "$1" >> "$NDJSON_FILE"
 }
 
+# Returns AUDIT_PATH for output; redacted when REDACT_PATHS. Use for report/NDJSON only.
+get_audit_path_for_output() {
+    local p="${AUDIT_PATH:-}"
+    if _common_is_true "$REDACT_PATHS"; then
+        p="$(echo "$p" | sed "s#$HOME_DIR#~#g; s#/${CURRENT_USER}/#/<user>/#g")"
+    fi
+    echo "$p"
+}
+
 redact_path_for_ndjson() {
     local input_path="$1"
     if ! _common_is_true "$REDACT_PATHS"; then
@@ -149,18 +158,235 @@ record_soft_failure() {
     echo "${1:-probe_failed}" >> "$SOFT_FAILURE_LOG"
 }
 
+# count_key: optional 4th arg; used for probe_failures_summary grouping. When omitted, uses probe.
+# message: optional 5th arg; first line of stderr (when AUDIT_CAPTURE_STDERR). Truncated to 200 chars.
+# For soft/soft_out pass argv0 (basename) to avoid cardinality explosion from variable args.
+emit_probe_failed() {
+    [ -n "$NDJSON_FILE" ] || return 0
+    local probe="$1"
+    local code="${2:-1}"
+    local argv0="${3:-}"
+    local count_key="${4:-$probe}"
+    local message="${5:-}"
+    local pf_file="${PROBE_FAILURES_FILE:-}"
+    [ -n "$pf_file" ] || pf_file="$(dirname "$REPORT_FILE")/.probe-failures-$$.tmp"
+    local ts
+    ts=$(now_ms)
+    printf '%s\t%s\t%s\n' "$count_key" "$ts" "${code:-1}" >> "$pf_file" 2>/dev/null || true
+    local msg_json=""
+    [ -n "$message" ] && msg_json=",\"message\":$(json_escape "$message")"
+    append_ndjson_line "{\"type\":\"probe_failed\",\"run_id\":$(json_escape "$RUN_ID"),\"probe\":$(json_escape "$probe"),\"argv0\":$(json_escape "$argv0"),\"exit_code\":${code:-1},\"ts_ms\":${ts}${msg_json}}"
+}
+
+emit_probe_failures_summary() {
+    [ -n "$NDJSON_FILE" ] || return 0
+    local pf_file="${PROBE_FAILURES_FILE:-$(dirname "$REPORT_FILE")/.probe-failures-$$.tmp}"
+    [ -f "$pf_file" ] || return 0
+    local summary_json
+    summary_json=$(awk -F'\t' '{
+        key=$1; ts=$2+0; code=$3+0
+        if (key=="") next
+        count[key]++
+        if (count[key]==1) { first[key]=ts; last[key]=ts }
+        else { if (ts<first[key]) first[key]=ts; if (ts>last[key]) last[key]=ts }
+        codes[key,code]++
+    }
+    END {
+        for (k in count) {
+            dur_ms = last[k] - first[k]
+            dur_sec = dur_ms / 1000
+            denom = (dur_sec > 1 ? dur_sec : 1)
+            rate = count[k] / denom
+            ec = ""
+            n = 0
+            for (idx in codes) {
+                split(idx, arr, SUBSEP)
+                if (arr[1] == k) {
+                    codes_list[++n] = arr[2]+0
+                }
+            }
+            for (i = 1; i < n; i++) {
+                for (j = i+1; j <= n; j++) {
+                    if (codes_list[i] > codes_list[j]) {
+                        t = codes_list[i]; codes_list[i] = codes_list[j]; codes_list[j] = t
+                    }
+                }
+            }
+            for (i = 1; i <= n; i++) {
+                c = codes_list[i]
+                if (ec != "") ec = ec ","
+                ec = ec "\"" c "\":" codes[k,c]
+            }
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k, count[k], first[k]+0, last[k]+0, dur_ms+0, rate, "{" ec "}"
+        }
+    }' "$pf_file" | sort -t$'\t' -k1,1 | RUN_ID="${RUN_ID:-}" python3 -c '
+import json,sys,os
+run_id=os.environ.get("RUN_ID","")
+items=[]
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    parts=line.split("\t",6)
+    if len(parts)<7: continue
+    probe,count,first_ts,last_ts,dur_ms,rate,ec_str=parts[0],int(parts[1] or 0),int(parts[2] or 0),int(parts[3] or 0),int(parts[4] or 0),float(parts[5] or 0),parts[6]
+    try: ec=json.loads(ec_str) if ec_str else {}
+    except: ec={}
+    items.append({"probe":probe,"count":count,"first_ts_ms":first_ts,"last_ts_ms":last_ts,"duration_ms":dur_ms,"failure_rate":round(rate,4),"exit_codes":ec})
+print(json.dumps({"type":"probe_failures_summary","run_id":run_id,"items":items}))
+')
+    rm -f "$pf_file" 2>/dev/null || true
+    [ -n "$summary_json" ] || return 0
+    append_ndjson_line "$summary_json"
+}
+
+# Redaction order: HOME_DIR first, then CURRENT_USER, then generic /Users/username/ (network home dirs, etc).
+# Only run /Users/.../ replacement if string still contains /Users/ (avoid double-sanitizing /<user>/).
+# Strips ANSI: SGR (\x1b\[...m), CSI (\x1b\[...[a-zA-Z]), OSC (\x1b\]...\x07 or \x1b\]...\x1b\\).
+_soft_capture_stderr_msg() {
+    local f="$1"
+    [ -f "$f" ] || return
+    local msg
+    msg=$(head -1 "$f" 2>/dev/null | cut -c1-200)
+    msg=$(echo "$msg" | sed -e "s#${HOME_DIR}#~#g" -e "s#/${CURRENT_USER}/#/<user>/#g")
+    [[ "$msg" == *"/Users/"* ]] && msg=$(echo "$msg" | sed "s#/Users/[^/]*/#/<user>/#g")
+    echo "$msg" | sed \
+        -e 's/\x1b\[[0-9;]*m//g' \
+        -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
+        -e $'s/\x1b\\][^\x07]*\x07//g' \
+        -e $'s/\x1b\\][^\x1b]*\x1b\\\\//g'
+}
+
 soft() {
-    "$@" 2>/dev/null || {
+    if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
+        local stderr_tmp
+        stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        if "$@" 2>"${stderr_tmp:-/dev/null}"; then
+            rm -f "$stderr_tmp" 2>/dev/null
+            return 0
+        fi
+        local code=$?
+        local msg
+        msg=$(_soft_capture_stderr_msg "$stderr_tmp")
         record_soft_failure "soft:$*"
+        emit_probe_failed "$*" "$code" "${1:-}" "$(basename "${1:-}" 2>/dev/null || echo "${1:-}")" "$msg"
+        rm -f "$stderr_tmp" 2>/dev/null
+        return 0
+    fi
+    "$@" 2>/dev/null || {
+        local code=$?
+        record_soft_failure "soft:$*"
+        emit_probe_failed "$*" "$code" "${1:-}" "$(basename "${1:-}" 2>/dev/null || echo "${1:-}")"
         return 0
     }
 }
 
 soft_out() {
-    "$@" 2>/dev/null || {
+    if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
+        local stderr_tmp
+        stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        local out
+        out=$("$@" 2>"${stderr_tmp:-/dev/null}")
+        local code=$?
+        if [ $code -eq 0 ]; then
+            rm -f "$stderr_tmp" 2>/dev/null
+            echo "$out"
+            return 0
+        fi
+        local msg
+        msg=$(_soft_capture_stderr_msg "$stderr_tmp")
         record_soft_failure "soft_out:$*"
+        emit_probe_failed "$*" "$code" "${1:-}" "$(basename "${1:-}" 2>/dev/null || echo "${1:-}")" "$msg"
+        rm -f "$stderr_tmp" 2>/dev/null
+        return 0
+    fi
+    "$@" 2>/dev/null || {
+        local code=$?
+        record_soft_failure "soft_out:$*"
+        emit_probe_failed "$*" "$code" "${1:-}" "$(basename "${1:-}" 2>/dev/null || echo "${1:-}")"
         return 0
     }
+}
+
+soft_probe() {
+    local probe="$1"; shift
+    if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
+        local stderr_tmp
+        stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        if "$@" 2>"${stderr_tmp:-/dev/null}"; then
+            rm -f "$stderr_tmp" 2>/dev/null
+            return 0
+        fi
+        local code=$?
+        local msg
+        msg=$(_soft_capture_stderr_msg "$stderr_tmp")
+        record_soft_failure "soft_probe:${probe}:$*"
+        emit_probe_failed "$probe" "$code" "${1:-}" "" "$msg"
+        rm -f "$stderr_tmp" 2>/dev/null
+        return 0
+    fi
+    "$@" 2>/dev/null || {
+        local code=$?
+        record_soft_failure "soft_probe:${probe}:$*"
+        emit_probe_failed "$probe" "$code" "${1:-}"
+        return 0
+    }
+}
+
+soft_out_probe() {
+    local probe="$1"; shift
+    if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
+        local stderr_tmp
+        stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        local out
+        out=$("$@" 2>"${stderr_tmp:-/dev/null}")
+        local code=$?
+        if [ $code -eq 0 ]; then
+            rm -f "$stderr_tmp" 2>/dev/null
+            echo "$out"
+            return 0
+        fi
+        local msg
+        msg=$(_soft_capture_stderr_msg "$stderr_tmp")
+        record_soft_failure "soft_out_probe:${probe}:$*"
+        emit_probe_failed "$probe" "$code" "${1:-}" "" "$msg"
+        rm -f "$stderr_tmp" 2>/dev/null
+        return 0
+    fi
+    "$@" 2>/dev/null || {
+        local code=$?
+        record_soft_failure "soft_out_probe:${probe}:$*"
+        emit_probe_failed "$probe" "$code" "${1:-}"
+        return 0
+    }
+}
+
+# Like soft_probe but returns the actual exit code (doesn't swallow on failure).
+# Use for probes where the caller needs the real exit code (e.g. admin check).
+soft_probe_check() {
+    local probe="$1"; shift
+    if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
+        local stderr_tmp
+        stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        if "$@" 2>"${stderr_tmp:-/dev/null}"; then
+            rm -f "$stderr_tmp" 2>/dev/null
+            return 0
+        fi
+        local code=$?
+        local msg
+        msg=$(_soft_capture_stderr_msg "$stderr_tmp")
+        record_soft_failure "soft_probe_check:${probe}:$*"
+        emit_probe_failed "$probe" "$code" "${1:-}" "" "$msg"
+        rm -f "$stderr_tmp" 2>/dev/null
+        return $code
+    fi
+    if "$@" 2>/dev/null; then
+        return 0
+    else
+        local code=$?
+        record_soft_failure "soft_probe_check:${probe}:$*"
+        emit_probe_failed "$probe" "$code" "${1:-}"
+        return $code
+    fi
 }
 
 sum_bytes_from_stdin() {

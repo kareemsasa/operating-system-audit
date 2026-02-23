@@ -77,7 +77,7 @@ network_init_ndjson_if_needed() {
         return 0
     fi
     : > "$NDJSON_FILE"
-    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"network-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"network-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
     NETWORK_NDJSON_INITIALIZED=true
 }
 
@@ -96,7 +96,7 @@ run_network_audit() {
     while IFS= read -r iface; do
         [ -n "$iface" ] || continue
         local iface_info
-        iface_info="$(soft_out ifconfig "$iface")"
+        iface_info="$(soft_out_probe "network.ifconfig_iface" ifconfig "$iface")"
         local ip
         ip="$(echo "$iface_info" | awk '/inet / && $2 != "127.0.0.1" {print $2; exit}')"
         ip="${ip:-none}"
@@ -114,7 +114,7 @@ run_network_audit() {
             interfaces_items="${interfaces_items},${item}"
         fi
         interfaces_count=$((interfaces_count + 1))
-    done < <(ifconfig -l 2>/dev/null | tr ' ' '\n' || true)
+    done < <(soft_out_probe "network.ifconfig_list" ifconfig -l | tr ' ' '\n' || true)
     if (( interfaces_count == 0 )); then
         echo "_No interfaces discovered._" >> "$REPORT_FILE"
     fi
@@ -138,7 +138,7 @@ run_network_audit() {
             listening_items="${listening_items},${item}"
         fi
         listening_count=$((listening_count + 1))
-    done < <(soft_out lsof -iTCP -sTCP:LISTEN -nP | awk 'NR>1 {n=split($9,a,":"); p=a[n]; if (p ~ /^[0-9]+$/) printf "%s\t%s\t%s\n", $1, $2, p}' | sed -n '1,20p')
+    done < <(soft_out_probe "network.lsof_listen" lsof -iTCP -sTCP:LISTEN -nP | awk 'NR>1 {n=split($9,a,":"); p=a[n]; if (p ~ /^[0-9]+$/) printf "%s\t%s\t%s\n", $1, $2, p}' | sed -n '1,20p')
     if (( listening_count == 0 )); then
         echo "_No listening TCP ports discovered (or probe unavailable)._ " >> "$REPORT_FILE"
     fi
@@ -155,7 +155,7 @@ run_network_audit() {
         [ -n "$dns" ] || continue
         echo "- \`$dns\`" >> "$REPORT_FILE"
         dns_count=$((dns_count + 1))
-    done < <(scutil --dns 2>/dev/null | awk '/nameserver\[[0-9]+\]/ {print $3}' | sort -u || true)
+    done < <(soft_out_probe "network.scutil_dns" scutil --dns | awk '/nameserver\[[0-9]+\]/ {print $3}' | sort -u || true)
     if (( dns_count == 0 )); then
         echo "_No DNS servers discovered._" >> "$REPORT_FILE"
     fi
@@ -165,12 +165,12 @@ run_network_audit() {
     section_start_ms=$(now_ms)
     section_header "🧱 Firewall Status"
     local fw_global
-    fw_global="$(soft_out defaults read /Library/Preferences/com.apple.alf globalstate | tr -d '[:space:]')"
+    fw_global="$(soft_out_probe "network.defaults_firewall_globalstate" defaults read /Library/Preferences/com.apple.alf globalstate | tr -d '[:space:]')"
     if [[ "$fw_global" =~ ^[0-9]+$ ]] && (( fw_global > 0 )); then
         firewall_enabled=true
     fi
     local fw_stealth_out
-    fw_stealth_out="$(soft_out /usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode)"
+    fw_stealth_out="$(soft_out_probe "network.socketfilterfw_stealth" /usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode)"
     if echo "$fw_stealth_out" | awk 'tolower($0) ~ /enabled/ {found=1} END{exit found ? 0 : 1}'; then
         firewall_stealth=true
     fi
@@ -216,6 +216,7 @@ network_main() {
     network_write_report_header_if_needed
     network_init_ndjson_if_needed
     run_network_audit
+    emit_probe_failures_summary
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

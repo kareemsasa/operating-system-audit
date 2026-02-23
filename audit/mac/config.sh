@@ -77,7 +77,7 @@ config_init_ndjson_if_needed() {
         return 0
     fi
     : > "$NDJSON_FILE"
-    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"config-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"config-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
     CONFIG_NDJSON_INITIALIZED=true
 }
 
@@ -91,27 +91,27 @@ run_config_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🔐 Security Defaults"
-    fv_status="$(soft_out fdesetup status)"
+    fv_status="$(soft_out_probe "config.fdesetup_status" fdesetup status)"
     if echo "$fv_status" | awk 'tolower($0) ~ /on/ {found=1} END{exit found ? 0 : 1}'; then
         filevault=true
     fi
-    sip_status="$(soft_out csrutil status)"
+    sip_status="$(soft_out_probe "config.csrutil_status" csrutil status)"
     if echo "$sip_status" | awk 'tolower($0) ~ /enabled/ {found=1} END{exit found ? 0 : 1}'; then
         sip=true
     fi
-    gk_status="$(soft_out spctl --status)"
+    gk_status="$(soft_out_probe "config.spctl_status" spctl --status)"
     if echo "$gk_status" | awk 'tolower($0) ~ /enabled/ {found=1} END{exit found ? 0 : 1}'; then
         gatekeeper=true
     fi
-    fw_global="$(soft_out defaults read /Library/Preferences/com.apple.alf globalstate | tr -d '[:space:]')"
+    fw_global="$(soft_out_probe "config.defaults_firewall_globalstate" defaults read /Library/Preferences/com.apple.alf globalstate | tr -d '[:space:]')"
     if [[ "$fw_global" =~ ^[0-9]+$ ]] && (( fw_global > 0 )); then
         firewall=true
     fi
-    remote_login="$(soft_out systemsetup -getremotelogin)"
+    remote_login="$(soft_out_probe "config.systemsetup_remotelogin" systemsetup -getremotelogin)"
     remote_login="${remote_login:-Unavailable}"
-    screen_lock_delay="$(soft_out defaults -currentHost read com.apple.screensaver askForPasswordDelay)"
+    screen_lock_delay="$(soft_out_probe "config.defaults_screen_lock_delay" defaults -currentHost read com.apple.screensaver askForPasswordDelay)"
     screen_lock_delay="${screen_lock_delay:-unset}"
-    auto_updates="$(soft_out softwareupdate --schedule)"
+    auto_updates="$(soft_out_probe "config.softwareupdate_schedule" softwareupdate --schedule)"
     auto_updates="${auto_updates:-unknown}"
     echo "- FileVault enabled: **$filevault**" >> "$REPORT_FILE"
     echo "- SIP enabled: **$sip**" >> "$REPORT_FILE"
@@ -187,6 +187,7 @@ config_main() {
     config_write_report_header_if_needed
     config_init_ndjson_if_needed
     run_config_audit
+    emit_probe_failures_summary
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

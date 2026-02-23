@@ -77,7 +77,7 @@ execution_init_ndjson_if_needed() {
         return 0
     fi
     : > "$NDJSON_FILE"
-    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"execution-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO")}"
+    append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"execution-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
     EXECUTION_NDJSON_INITIALIZED=true
 }
 
@@ -102,7 +102,7 @@ run_execution_audit() {
         else
             cpu_items="${cpu_items},${item}"
         fi
-    done < <(ps aux 2>/dev/null | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | sort -t$'\t' -k3,3nr | sed -n '1,15p')
+    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | sort -t$'\t' -k3,3nr | sed -n '1,15p')
     append_ndjson_line "{\"type\":\"top_processes_cpu\",\"run_id\":$(json_escape "$RUN_ID"),\"items\":[${cpu_items}]}"
     section_end_ms=$(now_ms)
     emit_timing "top_processes_cpu" "$section_start_ms" "$section_end_ms"
@@ -121,7 +121,7 @@ run_execution_audit() {
         else
             mem_items="${mem_items},${item}"
         fi
-    done < <(ps aux 2>/dev/null | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | sort -t$'\t' -k4,4nr | sed -n '1,15p')
+    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | sort -t$'\t' -k4,4nr | sed -n '1,15p')
     append_ndjson_line "{\"type\":\"top_processes_mem\",\"run_id\":$(json_escape "$RUN_ID"),\"items\":[${mem_items}]}"
     section_end_ms=$(now_ms)
     emit_timing "top_processes_mem" "$section_start_ms" "$section_end_ms"
@@ -172,9 +172,9 @@ run_execution_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🧾 Process/Daemon Summary"
-    total_processes="$(ps aux 2>/dev/null | awk 'NR>1 {c++} END{print c+0}')"
+    total_processes="$(soft_out_probe "execution.ps_aux" ps aux | awk 'NR>1 {c++} END{print c+0}')"
     total_processes="${total_processes:-0}"
-    running_daemons="$(soft_out launchctl list | awk 'NR>1 {c++} END{print c+0}')"
+    running_daemons="$(soft_out_probe "execution.launchctl_list" launchctl list | awk 'NR>1 {c++} END{print c+0}')"
     running_daemons="${running_daemons:-0}"
     echo "- Total running processes: **$total_processes**" >> "$REPORT_FILE"
     echo "- Running launchctl entries: **$running_daemons**" >> "$REPORT_FILE"
@@ -191,6 +191,7 @@ execution_main() {
     execution_write_report_header_if_needed
     execution_init_ndjson_if_needed
     run_execution_audit
+    emit_probe_failures_summary
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

@@ -17,6 +17,9 @@ audit_set_defaults_if_unset() {
     [[ -n "$_default_report_dir" ]] || _default_report_dir="audit"
 
     HOME_DIR="${HOME_DIR:-$HOME}"
+    # Ensure core macOS admin binaries exist even in non-login / GUI contexts
+    export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:${PATH:-}"
+    AUDIT_PATH="${AUDIT_PATH:-$PATH}"
     DEFAULT_REPORT_DIR="${DEFAULT_REPORT_DIR:-$(pwd)/output/$_default_report_dir}"
     REPORT_DIR="${REPORT_DIR:-$DEFAULT_REPORT_DIR}"
     NO_COLOR="${NO_COLOR:-false}"
