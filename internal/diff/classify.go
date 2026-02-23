@@ -36,7 +36,16 @@ var probeExpectedExitCodes = map[string]map[int]struct{}{
 	"config.defaults_screen_lock_delay":     {1: {}},
 	"network.defaults_firewall_globalstate":  {1: {}},
 	"identity.dscl_list_users":               {70: {}, 1: {}},
-	"identity.dseditgroup_checkmember":       {1: {}},
+	"identity.dseditgroup_checkmember":       {1: {}, 67: {}},
+	"execution.crontab_l":                    {1: {}},
+	"execution.launchagents_defaults_label":  {1: {}},
+	"execution.launchagents_defaults_program": {1: {}},
+	"execution.launchagents_defaults_programarguments": {1: {}},
+	"persistence.defaults_loginwindow_loginhook":  {1: {}},
+	"persistence.defaults_loginwindow_logouthook": {1: {}},
+	"persistence.launchdaemons_defaults_label":  {1: {}},
+	"persistence.launchdaemons_defaults_program": {1: {}},
+	"persistence.launchdaemons_defaults_programarguments": {1: {}},
 }
 
 // Topic for grouping (probe prefix -> display name). Order = display priority.

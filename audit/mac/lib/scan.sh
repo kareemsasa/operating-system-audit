@@ -619,7 +619,7 @@ run_storage_audit() {
     if [ -d "$TRASH_DIR" ]; then
         trash_kb=${OVERVIEW_KB_TRASH:-0}
         trash_size=$(human_size_kb "$trash_kb")
-        trash_count="$(soft_out find "$TRASH_DIR" -mindepth 1 -maxdepth 1 | count_lines)"
+        trash_count="$(soft_out_probe "storage.find_trash_items" find "$TRASH_DIR" -mindepth 1 -maxdepth 1 | count_lines)"
         trash_count=${trash_count:-0}
         echo -e "  Trash size: ${BOLD}$trash_size${NC} ($trash_count files)"
         echo "**Trash size:** $trash_size ($trash_count files)" >> "$REPORT_FILE"
