@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kareemsasa/operating-system-audit"
 	"github.com/kareemsasa/operating-system-audit/internal/diff"
 )
 
@@ -43,7 +45,15 @@ var validManifestOS = map[string]struct{}{
 }
 
 func main() {
-	exitCode := run(os.Args[1:])
+	var exitCode int
+	func() {
+		defer func() {
+			if extractedCleanup != nil {
+				extractedCleanup()
+			}
+		}()
+		exitCode = run(os.Args[1:])
+	}()
 	os.Exit(exitCode)
 }
 
@@ -134,7 +144,57 @@ func resolveRepoRoot() (string, error) {
 		}
 	}
 
-	return "", errors.New("could not determine repository root (set OSAUDIT_ROOT)")
+	// Fallback: extract embedded files to temp dir for standalone binary
+	root, cleanup, err := extractEmbedded()
+	if err != nil {
+		return "", fmt.Errorf("could not determine repository root (set OSAUDIT_ROOT): %w", err)
+	}
+	// Store cleanup for main to defer; caller must call it when done
+	extractedCleanup = cleanup
+	return root, nil
+}
+
+var extractedCleanup func()
+
+func extractEmbedded() (string, func(), error) {
+	tmpDir, err := os.MkdirTemp("", "osaudit-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	cleanup := func() {
+		os.RemoveAll(tmpDir)
+	}
+
+	err = fs.WalkDir(embedded.EmbeddedFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == "." {
+			return nil
+		}
+		dst := filepath.Join(tmpDir, path)
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		data, err := fs.ReadFile(embedded.EmbeddedFS, path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		mode := os.FileMode(0o644)
+		if strings.HasSuffix(path, ".sh") || strings.HasSuffix(path, ".py") {
+			mode = 0o755
+		}
+		return os.WriteFile(dst, data, mode)
+	})
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("extract embedded files: %w", err)
+	}
+
+	return tmpDir, cleanup, nil
 }
 
 func loadCommands(manifestPath, detectedOS string) ([]auditCommand, error) {

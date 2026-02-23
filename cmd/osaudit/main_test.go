@@ -285,3 +285,41 @@ func sliceEqual(a, b []string) bool {
 	}
 	return true
 }
+
+func TestResolveRepoRoot_FallbackToExtraction(t *testing.T) {
+	// When no on-disk repo root exists (e.g. standalone binary), resolveRepoRoot
+	// falls back to extracting embedded files. This test verifies that path.
+	// Note: This test may use extraction when run via "go test" because the
+	// test binary lives in the build cache, not the repo.
+	origRoot := os.Getenv("OSAUDIT_ROOT")
+	os.Unsetenv("OSAUDIT_ROOT")
+	defer func() {
+		if origRoot != "" {
+			os.Setenv("OSAUDIT_ROOT", origRoot)
+		}
+	}()
+
+	root, err := resolveRepoRoot()
+	if err != nil {
+		t.Fatalf("resolveRepoRoot() = %v", err)
+	}
+	manifestPath := filepath.Join(root, "cli", "commands.json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Errorf("manifest at %s: %v", manifestPath, err)
+	}
+	// Verify audit script exists
+	auditScript := filepath.Join(root, "audit", "mac", "full-audit.sh")
+	if _, err := os.Stat(auditScript); err != nil {
+		t.Errorf("audit script at %s: %v", auditScript, err)
+	}
+	// Verify Python helpers exist
+	probePy := filepath.Join(root, "core", "probe_failures_summary.py")
+	if _, err := os.Stat(probePy); err != nil {
+		t.Errorf("probe_failures_summary.py at %s: %v", probePy, err)
+	}
+	// Clean up if we used extraction (extractedCleanup was set)
+	if extractedCleanup != nil {
+		extractedCleanup()
+		extractedCleanup = nil
+	}
+}
