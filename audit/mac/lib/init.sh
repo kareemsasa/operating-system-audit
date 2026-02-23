@@ -156,3 +156,5 @@ audit_resolve_output_paths() {
         NDJSON_FILE=""
     fi
 }
+
+export AUDIT_INIT_LOADED=1

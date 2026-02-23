@@ -5,15 +5,20 @@ Uses synthetic NDJSON fixtures to assert: tight burst, span+rate, (0.0/s) guard,
 Also tests message redaction rules (order: HOME_DIR, CURRENT_USER, /Users/username/, ANSI strip).
 """
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE = REPO_ROOT / "tests" / "fixtures" / "probe_diff_baseline.ndjson"
 CURRENT = REPO_ROOT / "tests" / "fixtures" / "probe_diff_current.ndjson"
 DIFF_PY = REPO_ROOT / "core" / "diff.py"
+PROBE_FAILURES_SUMMARY_PY = REPO_ROOT / "core" / "probe_failures_summary.py"
 
 
 def run_diff():
@@ -151,6 +156,63 @@ def redact_stderr_message(msg, home_dir, current_user):
     return msg
 
 
+def test_probe_failures_summary_output_format():
+    """TSV (count_key, ts_ms, exit_code) produces correct probe_failures_summary NDJSON."""
+    # TSV format from emit_probe_failed: count_key\tts\tcode
+    tsv_content = """identity.dscl_list_users\t1708600000000\t70
+config.defaults_firewall_globalstate\t1708600001000\t1
+network.ifconfig_list\t1708600301000\t1
+network.ifconfig_list\t1708600301100\t1
+network.ifconfig_list\t1708600303100\t1
+config.fdesetup_status\t1708600303200\t1
+config.fdesetup_status\t1708600303300\t255
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tsv", delete=False) as f:
+        f.write(tsv_content)
+        tsv_path = f.name
+    try:
+        env = os.environ.copy()
+        env["RUN_ID"] = "test-run-001"
+        result = subprocess.run(
+            [sys.executable, str(PROBE_FAILURES_SUMMARY_PY), tsv_path],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+            env=env,
+        )
+        assert result.returncode == 0, f"script failed: {result.stderr}"
+        out = result.stdout.strip()
+        data = json.loads(out)
+        assert data["type"] == "probe_failures_summary"
+        assert data["run_id"] == "test-run-001"
+        items = data["items"]
+        assert len(items) == 4  # identity, config.defaults, network, config.fdesetup
+        probes = [i["probe"] for i in items]
+        assert probes == sorted(probes), "items must be sorted by probe name"
+        # identity.dscl_list_users: 1×, exit 70
+        identity = next(i for i in items if i["probe"] == "identity.dscl_list_users")
+        assert identity["count"] == 1
+        assert identity["first_ts_ms"] == 1708600000000
+        assert identity["duration_ms"] == 0
+        assert identity["failure_rate"] == 1.0
+        assert identity["exit_codes"] == {"70": 1}
+        # network.ifconfig_list: 3× over 2.1s, rate 3/2.1 ≈ 1.43
+        network = next(i for i in items if i["probe"] == "network.ifconfig_list")
+        assert network["count"] == 3
+        assert network["first_ts_ms"] == 1708600301000
+        assert network["last_ts_ms"] == 1708600303100
+        assert network["duration_ms"] == 2100
+        assert network["failure_rate"] == pytest.approx(3 / 2.1, rel=0.01)
+        assert network["exit_codes"] == {"1": 3}
+        # config.fdesetup_status: 2×, mixed exit codes 1 and 255
+        fdesetup = next(i for i in items if i["probe"] == "config.fdesetup_status")
+        assert fdesetup["count"] == 2
+        assert fdesetup["exit_codes"] == {"1": 1, "255": 1}
+        print("Probe failures summary output format assertions passed.")
+    finally:
+        os.unlink(tsv_path)
+
+
 def test_message_redaction_order():
     """Redaction order: HOME_DIR first, then CURRENT_USER, then generic /Users/username/."""
     home = "/Users/jane"
@@ -171,5 +233,8 @@ def test_message_redaction_order():
 
 
 if __name__ == "__main__":
+    test_probe_failures_summary_output_format()
     test_message_redaction_order()
     test_probe_diff_formatting()
+    test_no_op_change_not_emitted()
+    test_diff_exit_codes()

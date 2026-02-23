@@ -194,7 +194,7 @@ run_network_audit() {
     local ssid="unknown"
     local bssid="unknown"
     if [ -x "$airport_bin" ]; then
-        wifi_out="$(soft_out "$airport_bin" -I)"
+        wifi_out="$(soft_out_probe "network.airport_i" "$airport_bin" -I)"
         ssid="$(echo "$wifi_out" | awk -F': ' '/ SSID/ {print $2; exit}')"
         bssid="$(echo "$wifi_out" | awk -F': ' '/ BSSID/ {print $2; exit}')"
     fi

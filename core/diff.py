@@ -147,7 +147,8 @@ def fmt_ts_ms(ts_ms):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Diff two NDJSON audit files and output a change report."
+        description="Diff two NDJSON audit files and output a change report.",
+        epilog="Exit codes: 0 = no changes, 2 = changes detected, 1 = error.",
     )
     parser.add_argument("--baseline", required=True, help="Path to baseline NDJSON file")
     parser.add_argument("--current", required=True, help="Path to current NDJSON file")

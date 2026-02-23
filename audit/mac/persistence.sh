@@ -95,11 +95,11 @@ run_persistence_audit() {
     local daemon_items=""
     shopt -s nullglob
     for plist in /Library/LaunchDaemons/*.plist; do
-        label="$(soft_out defaults read "$plist" Label)"
+        label="$(soft_out_probe "persistence.launchdaemons_defaults_label" defaults read "$plist" Label)"
         label="${label:-$(basename "$plist")}"
-        program="$(soft_out defaults read "$plist" Program)"
+        program="$(soft_out_probe "persistence.launchdaemons_defaults_program" defaults read "$plist" Program)"
         if [ -z "$program" ]; then
-            program="$(soft_out defaults read "$plist" ProgramArguments | awk 'NR==2 {gsub(/[ ;"]/,"",$0); print $0; exit}')"
+            program="$(soft_out_probe "persistence.launchdaemons_defaults_programarguments" defaults read "$plist" ProgramArguments | awk 'NR==2 {gsub(/[ ;"]/,"",$0); print $0; exit}')"
         fi
         program="${program:-unknown}"
         echo "| \`$label\` | \`$program\` | \`$plist\` |" >> "$REPORT_FILE"
@@ -188,8 +188,8 @@ run_persistence_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🪝 Login Hooks & Authorization Plugins"
-    login_hook="$(soft_out defaults read com.apple.loginwindow LoginHook)"
-    logout_hook="$(soft_out defaults read com.apple.loginwindow LogoutHook)"
+    login_hook="$(soft_out_probe "persistence.defaults_loginwindow_loginhook" defaults read com.apple.loginwindow LoginHook)"
+    logout_hook="$(soft_out_probe "persistence.defaults_loginwindow_logouthook" defaults read com.apple.loginwindow LogoutHook)"
     if [ -n "${login_hook:-}" ] || [ -n "${logout_hook:-}" ]; then
         login_hooks=true
     fi

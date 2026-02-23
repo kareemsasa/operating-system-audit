@@ -22,6 +22,7 @@ _common_require_var_nonempty() {
 }
 
 _common_validate_required_context() {
+    [ "${AUDIT_INIT_LOADED:-}" = "1" ] || { echo "Error: common.sh requires init.sh to be sourced first" >&2; return 1; }
     _common_require_var_set "NO_COLOR" || return 1
     _common_require_var_set "NDJSON_FILE" || return 1
     _common_require_var_set "RUN_ID" || return 1
@@ -41,6 +42,27 @@ _common_validate_required_context() {
 _common_validate_required_context || {
     return 1 2>/dev/null || exit 1
 }
+
+# Temp file cleanup - run on EXIT/INT/TERM
+_COMMON_TMPFILES=()
+
+_common_register_tmp() {
+    local f="$1"
+    [[ -n "$f" ]] && _COMMON_TMPFILES+=("$f")
+}
+
+_common_cleanup_tmps() {
+    local f
+    for f in "${_COMMON_TMPFILES[@]}"; do
+        [[ -n "$f" ]] && rm -f "$f" 2>/dev/null || true
+    done
+    _COMMON_TMPFILES=()
+}
+
+if [[ "${_COMMON_CLEANUP_TRAP_SET:-0}" != "1" ]]; then
+    trap _common_cleanup_tmps EXIT INT TERM
+    _COMMON_CLEANUP_TRAP_SET=1
+fi
 
 _common_is_true() {
     case "${1:-}" in
@@ -187,58 +209,10 @@ emit_probe_failures_summary() {
     [ -n "$NDJSON_FILE" ] || return 0
     local pf_file="${PROBE_FAILURES_FILE:-$(dirname "$REPORT_FILE")/.probe-failures-$$.tmp}"
     [ -f "$pf_file" ] || return 0
+    local repo_root
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
     local summary_json
-    summary_json=$(awk -F'\t' '{
-        key=$1; ts=$2+0; code=$3+0
-        if (key=="") next
-        count[key]++
-        if (count[key]==1) { first[key]=ts; last[key]=ts }
-        else { if (ts<first[key]) first[key]=ts; if (ts>last[key]) last[key]=ts }
-        codes[key,code]++
-    }
-    END {
-        for (k in count) {
-            dur_ms = last[k] - first[k]
-            dur_sec = dur_ms / 1000
-            denom = (dur_sec > 1 ? dur_sec : 1)
-            rate = count[k] / denom
-            ec = ""
-            n = 0
-            for (idx in codes) {
-                split(idx, arr, SUBSEP)
-                if (arr[1] == k) {
-                    codes_list[++n] = arr[2]+0
-                }
-            }
-            for (i = 1; i < n; i++) {
-                for (j = i+1; j <= n; j++) {
-                    if (codes_list[i] > codes_list[j]) {
-                        t = codes_list[i]; codes_list[i] = codes_list[j]; codes_list[j] = t
-                    }
-                }
-            }
-            for (i = 1; i <= n; i++) {
-                c = codes_list[i]
-                if (ec != "") ec = ec ","
-                ec = ec "\"" c "\":" codes[k,c]
-            }
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k, count[k], first[k]+0, last[k]+0, dur_ms+0, rate, "{" ec "}"
-        }
-    }' "$pf_file" | sort -t$'\t' -k1,1 | RUN_ID="${RUN_ID:-}" python3 -c '
-import json,sys,os
-run_id=os.environ.get("RUN_ID","")
-items=[]
-for line in sys.stdin:
-    line=line.strip()
-    if not line: continue
-    parts=line.split("\t",6)
-    if len(parts)<7: continue
-    probe,count,first_ts,last_ts,dur_ms,rate,ec_str=parts[0],int(parts[1] or 0),int(parts[2] or 0),int(parts[3] or 0),int(parts[4] or 0),float(parts[5] or 0),parts[6]
-    try: ec=json.loads(ec_str) if ec_str else {}
-    except: ec={}
-    items.append({"probe":probe,"count":count,"first_ts_ms":first_ts,"last_ts_ms":last_ts,"duration_ms":dur_ms,"failure_rate":round(rate,4),"exit_codes":ec})
-print(json.dumps({"type":"probe_failures_summary","run_id":run_id,"items":items}))
-')
+    summary_json=$(RUN_ID="${RUN_ID:-}" python3 "$repo_root/core/probe_failures_summary.py" "$pf_file" 2>/dev/null)
     rm -f "$pf_file" 2>/dev/null || true
     [ -n "$summary_json" ] || return 0
     append_ndjson_line "$summary_json"
@@ -261,10 +235,12 @@ _soft_capture_stderr_msg() {
         -e $'s/\x1b\\][^\x1b]*\x1b\\\\//g'
 }
 
+# INTERNAL/LEGACY: Prefer soft_probe() with explicit probe names. Do not add new callers.
 soft() {
     if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
         local stderr_tmp
         stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        _common_register_tmp "$stderr_tmp"
         if "$@" 2>"${stderr_tmp:-/dev/null}"; then
             rm -f "$stderr_tmp" 2>/dev/null
             return 0
@@ -285,10 +261,12 @@ soft() {
     }
 }
 
+# INTERNAL/LEGACY: Prefer soft_out_probe() with explicit probe names. Do not add new callers.
 soft_out() {
     if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
         local stderr_tmp
         stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        _common_register_tmp "$stderr_tmp"
         local out
         out=$("$@" 2>"${stderr_tmp:-/dev/null}")
         local code=$?
@@ -317,6 +295,7 @@ soft_probe() {
     if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
         local stderr_tmp
         stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        _common_register_tmp "$stderr_tmp"
         if "$@" 2>"${stderr_tmp:-/dev/null}"; then
             rm -f "$stderr_tmp" 2>/dev/null
             return 0
@@ -342,6 +321,7 @@ soft_out_probe() {
     if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
         local stderr_tmp
         stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        _common_register_tmp "$stderr_tmp"
         local out
         out=$("$@" 2>"${stderr_tmp:-/dev/null}")
         local code=$?
@@ -372,6 +352,7 @@ soft_probe_check() {
     if _common_is_true "${AUDIT_CAPTURE_STDERR:-false}"; then
         local stderr_tmp
         stderr_tmp=$(mktemp -t audit_stderr.XXXXXX 2>/dev/null)
+        _common_register_tmp "$stderr_tmp"
         if "$@" 2>"${stderr_tmp:-/dev/null}"; then
             rm -f "$stderr_tmp" 2>/dev/null
             return 0

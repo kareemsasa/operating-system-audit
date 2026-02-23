@@ -128,7 +128,7 @@ run_execution_audit() {
 
     section_start_ms=$(now_ms)
     section_header "📅 Scheduled Tasks & Login Items"
-    login_items_raw="$(soft_out osascript -e 'tell application "System Events" to get the name of every login item')"
+    login_items_raw="$(soft_out_probe "execution.osascript_login_items" osascript -e 'tell application "System Events" to get the name of every login item')"
     login_items_count=0
     if [ -n "$login_items_raw" ]; then
         login_items_count=$(echo "$login_items_raw" | awk -F',' '{print NF}')
@@ -137,7 +137,7 @@ run_execution_audit() {
         echo "- Login items: _none detected or unavailable_" >> "$REPORT_FILE"
     fi
 
-    cron_raw="$(soft_out crontab -l)"
+    cron_raw="$(soft_out_probe "execution.crontab_l" crontab -l)"
     if [ -n "$cron_raw" ]; then
         cron_jobs_count=$(echo "$cron_raw" | awk 'NF && $1 !~ /^#/ {c++} END{print c+0}')
     else
@@ -151,11 +151,11 @@ run_execution_audit() {
     user_launch_agents_count=0
     shopt -s nullglob
     for plist in "$HOME_DIR"/Library/LaunchAgents/*.plist; do
-        label="$(soft_out defaults read "$plist" Label)"
+        label="$(soft_out_probe "execution.launchagents_defaults_label" defaults read "$plist" Label)"
         label="${label:-$(basename "$plist")}"
-        program="$(soft_out defaults read "$plist" Program)"
+        program="$(soft_out_probe "execution.launchagents_defaults_program" defaults read "$plist" Program)"
         if [ -z "$program" ]; then
-            program="$(soft_out defaults read "$plist" ProgramArguments | awk 'NR==2 {gsub(/[ ;"]/,"",$0); print $0; exit}')"
+            program="$(soft_out_probe "execution.launchagents_defaults_programarguments" defaults read "$plist" ProgramArguments | awk 'NR==2 {gsub(/[ ;"]/,"",$0); print $0; exit}')"
         fi
         program="${program:-unknown}"
         safe_plist="$(redact_path_for_ndjson "$plist")"

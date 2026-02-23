@@ -97,7 +97,7 @@ run_identity_audit() {
         case "$username" in
             _*) continue ;;
         esac
-        uid="$(soft_out dscl . -read "/Users/$username" UniqueID | awk '/UniqueID:/ {print $2; exit}')"
+        uid="$(soft_out_probe "identity.dscl_read_uniqueid" dscl . -read "/Users/$username" UniqueID | awk '/UniqueID:/ {print $2; exit}')"
         uid="${uid:-0}"
         admin=false
         if soft_probe_check "identity.dseditgroup_checkmember" dseditgroup -o checkmember -m "$username" admin 2>/dev/null; then

@@ -144,10 +144,10 @@ run_config_audit() {
     brew_prefix="not-installed"
     if command -v brew >/dev/null 2>&1; then
         homebrew_installed=true
-        brew_prefix="$(soft_out brew --prefix)"
+        brew_prefix="$(soft_out_probe "config.brew_prefix" brew --prefix)"
         brew_prefix="${brew_prefix:-unknown}"
-        brew_formulae="$(soft_out brew list --formula | count_lines)"
-        brew_casks="$(soft_out brew list --cask | count_lines)"
+        brew_formulae="$(soft_out_probe "config.brew_list_formula" brew list --formula | count_lines)"
+        brew_casks="$(soft_out_probe "config.brew_list_cask" brew list --cask | count_lines)"
         brew_formulae="${brew_formulae:-0}"
         brew_casks="${brew_casks:-0}"
     fi
