@@ -66,6 +66,28 @@ Outputs:
 
 ## Installation
 
+### From release (macOS/Linux)
+
+Download the latest binary for your OS and architecture:
+
+```bash
+# Detect OS and arch (matches goreleaser: darwin/linux, amd64/arm64)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+[ "$ARCH" = "x86_64" ] && ARCH=amd64
+[ "$ARCH" = "aarch64" ] && ARCH=arm64
+curl -sSL "https://github.com/kareemsasa/operating-system-audit/releases/latest/download/osaudit_${OS}_${ARCH}.tar.gz" | tar xz -C /usr/local/bin osaudit
+chmod +x /usr/local/bin/osaudit
+```
+
+### From source (Go)
+
+```bash
+go install github.com/kareemsasa/operating-system-audit/cmd/osaudit@latest
+```
+
+### Build from repo
+
 Clone the repository:
 
 ```bash
