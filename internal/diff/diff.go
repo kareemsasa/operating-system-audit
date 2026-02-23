@@ -1,8 +1,10 @@
 package diff
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,17 +16,18 @@ const (
 	spanTightBurst = "tight burst"
 )
 
-// Run runs the full diff between baseline and current rows, prints human-readable
-// Markdown output, and returns true if any changes were detected.
-func Run(baselineRows, currentRows []Row) bool {
+// Run runs the full diff between baseline and current rows. When ndjson is false,
+// prints human-readable Markdown. When ndjson is true, emits one JSON line per
+// delta to stdout. Returns true if any changes were detected.
+func Run(baselineRows, currentRows []Row, ndjson bool) bool {
 	baseByType := GroupByType(baselineRows)
 	currByType := GroupByType(currentRows)
 
 	hasDeltas := false
-	hasDeltas = emitStorageDelta(baseByType["summary"], currByType["summary"]) || hasDeltas
-	hasDeltas = emitCountDelta(baseByType["counts"], currByType["counts"]) || hasDeltas
-	hasDeltas = emitSecurityConfigDelta(baseByType["security_config"], currByType["security_config"]) || hasDeltas
-	hasDeltas = emitHomebrewDelta(baseByType["homebrew_summary"], currByType["homebrew_summary"]) || hasDeltas
+	hasDeltas = emitStorageDelta(baseByType["summary"], currByType["summary"], ndjson) || hasDeltas
+	hasDeltas = emitCountDelta(baseByType["counts"], currByType["counts"], ndjson) || hasDeltas
+	hasDeltas = emitSecurityConfigDelta(baseByType["security_config"], currByType["security_config"], ndjson) || hasDeltas
+	hasDeltas = emitHomebrewDelta(baseByType["homebrew_summary"], currByType["homebrew_summary"], ndjson) || hasDeltas
 
 	baseWarnings := CollectWarningCodes(baselineRows)
 	currWarnings := CollectWarningCodes(currentRows)
@@ -34,14 +37,24 @@ func Run(baselineRows, currentRows []Row) bool {
 			newWarnings = append(newWarnings, c)
 		}
 	}
-	hasDeltas = emitNewWarnings(newWarnings) || hasDeltas
+	hasDeltas = emitNewWarnings(newWarnings, ndjson) || hasDeltas
 
-	hasDeltas = emitProbeFailuresDelta(baseByType["probe_failures_summary"], currByType["probe_failures_summary"]) || hasDeltas
+	hasDeltas = emitProbeFailuresDelta(baseByType["probe_failures_summary"], currByType["probe_failures_summary"], ndjson) || hasDeltas
 
-	if !hasDeltas {
+	if !hasDeltas && !ndjson {
 		fmt.Println("No changes detected between baseline and current.")
 	}
 	return hasDeltas
+}
+
+func emitDiffRow(diffType string, fields map[string]any) {
+	row := map[string]any{"type": "diff", "diff_type": diffType}
+	for k, v := range fields {
+		row[k] = v
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+	enc.Encode(row)
 }
 
 func fmtBytes(n any) string {
@@ -403,7 +416,7 @@ func formatProbeEntryChanged(probe string, baseIt, currIt Row) string {
 	return fmt.Sprintf("  ~ %s %d×→%d×%s", probe, bc, cc, expSuffix)
 }
 
-func emitStorageDelta(baseSum, currSum Row) bool {
+func emitStorageDelta(baseSum, currSum Row, ndjson bool) bool {
 	storageFields := []string{"home_bytes", "downloads_bytes", "desktop_bytes", "trash_bytes"}
 	if baseSum == nil || currSum == nil {
 		return false
@@ -438,19 +451,31 @@ func emitStorageDelta(baseSum, currSum Row) bool {
 	if len(deltas) == 0 {
 		return false
 	}
-	fmt.Println("## Storage delta")
-	for _, d := range deltas {
-		sign := ""
-		if d.delta >= 0 {
-			sign = "+"
+	if ndjson {
+		for _, d := range deltas {
+			emitDiffRow("storage", map[string]any{
+				"field":      d.field,
+				"baseline":   d.b,
+				"current":    d.c,
+				"delta":      d.delta,
+				"pct_change": math.Round(d.pct*100) / 100,
+			})
 		}
-		fmt.Printf("  %s: %s → %s (%s%s, %+.1f%%)\n", d.field, fmtBytes(d.b), fmtBytes(d.c), sign, fmtBytes(d.delta), d.pct)
+	} else {
+		fmt.Println("## Storage delta")
+		for _, d := range deltas {
+			sign := ""
+			if d.delta >= 0 {
+				sign = "+"
+			}
+			fmt.Printf("  %s: %s → %s (%s%s, %+.1f%%)\n", d.field, fmtBytes(d.b), fmtBytes(d.c), sign, fmtBytes(d.delta), d.pct)
+		}
+		fmt.Println()
 	}
-	fmt.Println()
 	return true
 }
 
-func emitCountDelta(baseCounts, currCounts Row) bool {
+func emitCountDelta(baseCounts, currCounts Row, ndjson bool) bool {
 	countFields := []string{"large_files", "node_modules", "broken_symlinks", "git_repos", "venv_cache"}
 	if baseCounts == nil || currCounts == nil {
 		return false
@@ -473,26 +498,37 @@ func emitCountDelta(baseCounts, currCounts Row) bool {
 	if len(deltas) == 0 {
 		return false
 	}
-	fmt.Println("## Count changes")
-	for _, d := range deltas {
-		sign := ""
-		if d.delta >= 0 {
-			sign = "+"
+	if ndjson {
+		for _, d := range deltas {
+			emitDiffRow("count", map[string]any{
+				"field":    d.field,
+				"baseline": d.b,
+				"current":  d.c,
+				"delta":    d.delta,
+			})
 		}
-		fmt.Printf("  %s: %d → %d (%s%d)\n", d.field, d.b, d.c, sign, d.delta)
+	} else {
+		fmt.Println("## Count changes")
+		for _, d := range deltas {
+			sign := ""
+			if d.delta >= 0 {
+				sign = "+"
+			}
+			fmt.Printf("  %s: %d → %d (%s%d)\n", d.field, d.b, d.c, sign, d.delta)
+		}
+		fmt.Println()
 	}
-	fmt.Println()
 	return true
 }
 
-func emitSecurityConfigDelta(baseSec, currSec Row) bool {
+func emitSecurityConfigDelta(baseSec, currSec Row, ndjson bool) bool {
 	secFields := []string{"filevault", "sip", "gatekeeper", "firewall"}
 	if baseSec == nil || currSec == nil {
 		return false
 	}
 	var changes []struct {
-		field    string
-		b, c     bool
+		field string
+		b, c  bool
 	}
 	for _, f := range secFields {
 		b, c := baseSec[f], currSec[f]
@@ -511,18 +547,28 @@ func emitSecurityConfigDelta(baseSec, currSec Row) bool {
 	if len(changes) == 0 {
 		return false
 	}
-	fmt.Println("## Security config changes")
-	for _, ch := range changes {
-		bStr, cStr := "off", "off"
-		if ch.b {
-			bStr = "on"
+	if ndjson {
+		for _, ch := range changes {
+			emitDiffRow("security_config", map[string]any{
+				"field":    ch.field,
+				"baseline": ch.b,
+				"current":  ch.c,
+			})
 		}
-		if ch.c {
-			cStr = "on"
+	} else {
+		fmt.Println("## Security config changes")
+		for _, ch := range changes {
+			bStr, cStr := "off", "off"
+			if ch.b {
+				bStr = "on"
+			}
+			if ch.c {
+				cStr = "on"
+			}
+			fmt.Printf("  %s: %s → %s\n", ch.field, bStr, cStr)
 		}
-		fmt.Printf("  %s: %s → %s\n", ch.field, bStr, cStr)
+		fmt.Println()
 	}
-	fmt.Println()
 	return true
 }
 
@@ -542,7 +588,7 @@ func toBool(v any) bool {
 	}
 }
 
-func emitHomebrewDelta(baseBrew, currBrew Row) bool {
+func emitHomebrewDelta(baseBrew, currBrew Row, ndjson bool) bool {
 	if baseBrew == nil || currBrew == nil {
 		return false
 	}
@@ -564,28 +610,43 @@ func emitHomebrewDelta(baseBrew, currBrew Row) bool {
 	if len(deltas) == 0 {
 		return false
 	}
-	fmt.Println("## Homebrew delta")
-	for _, d := range deltas {
-		sign := ""
-		if d.delta >= 0 {
-			sign = "+"
+	if ndjson {
+		for _, d := range deltas {
+			emitDiffRow("homebrew", map[string]any{
+				"field":    d.field,
+				"baseline": d.b,
+				"current":  d.c,
+				"delta":    d.delta,
+			})
 		}
-		fmt.Printf("  %s: %d → %d (%s%d)\n", d.field, d.b, d.c, sign, d.delta)
+	} else {
+		fmt.Println("## Homebrew delta")
+		for _, d := range deltas {
+			sign := ""
+			if d.delta >= 0 {
+				sign = "+"
+			}
+			fmt.Printf("  %s: %d → %d (%s%d)\n", d.field, d.b, d.c, sign, d.delta)
+		}
+		fmt.Println()
 	}
-	fmt.Println()
 	return true
 }
 
-func emitNewWarnings(codes []string) bool {
+func emitNewWarnings(codes []string, ndjson bool) bool {
 	if len(codes) == 0 {
 		return false
 	}
 	sort.Strings(codes)
-	fmt.Println("## New warnings")
-	for _, c := range codes {
-		fmt.Printf("  - %s\n", c)
+	if ndjson {
+		emitDiffRow("new_warnings", map[string]any{"codes": codes})
+	} else {
+		fmt.Println("## New warnings")
+		for _, c := range codes {
+			fmt.Printf("  - %s\n", c)
+		}
+		fmt.Println()
 	}
-	fmt.Println()
 	return true
 }
 
@@ -598,13 +659,53 @@ func topicSortKey(topic string) int {
 	return 99
 }
 
-func emitProbeFailuresDelta(basePF, currPF Row) bool {
+func emitProbeFailuresDelta(basePF, currPF Row, ndjson bool) bool {
 	entries := buildProbeFailureEntries(basePF, currPF)
-	fmt.Println("## Probe failures delta")
 	if len(entries) == 0 {
-		fmt.Println("  No changes detected")
-		fmt.Println()
+		if !ndjson {
+			fmt.Println("## Probe failures delta")
+			fmt.Println("  No changes detected")
+			fmt.Println()
+		}
 		return false
+	}
+	if ndjson {
+		for _, e := range entries {
+			it := e.currIt
+			if it == nil {
+				it = e.baseIt
+			}
+			ec := getMap(it, "exit_codes")
+			fields := map[string]any{
+				"probe":          e.probe,
+				"status":         e.status,
+				"severity":       ProbeSeverity(e.probe),
+				"topic":          ProbeTopic(e.probe),
+				"expected":       ExpectedState(e.probe, ec) == "expected",
+				"expected_state": ExpectedState(e.probe, ec),
+			}
+			switch e.status {
+			case "new":
+				fields["current"] = e.currIt
+			case "resolved":
+				fields["baseline"] = e.baseIt
+			default:
+				fields["baseline"] = e.baseIt
+				fields["current"] = e.currIt
+				ecDelta := exitCodesDelta(getMap(e.baseIt, "exit_codes"), getMap(e.currIt, "exit_codes"))
+				nonZero := make(map[string]int)
+				for k, v := range ecDelta {
+					if v != 0 {
+						nonZero[k] = v
+					}
+				}
+				if len(nonZero) > 0 {
+					fields["exit_codes_delta"] = nonZero
+				}
+			}
+			emitDiffRow("probe_failure", fields)
+		}
+		return true
 	}
 	byTopic := make(map[string][]probeEntry)
 	for _, e := range entries {
@@ -622,6 +723,7 @@ func emitProbeFailuresDelta(basePF, currPF Row) bool {
 		}
 		return topics[i] < topics[j]
 	})
+	fmt.Println("## Probe failures delta")
 	for _, topic := range topics {
 		items := byTopic[topic]
 		fmt.Printf("\n### %s\n", topic)

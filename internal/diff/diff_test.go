@@ -30,7 +30,7 @@ func TestRun_WithFixtures_HasDeltasAndExpectedFormatting(t *testing.T) {
 	}
 	os.Stdout = w
 
-	hasDeltas := Run(baselineRows, currentRows)
+	hasDeltas := Run(baselineRows, currentRows, false)
 
 	w.Close()
 	os.Stdout = oldStdout
@@ -118,7 +118,7 @@ func TestRun_NoOpChange_NotEmitted(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	hasDeltas := Run(baselineRows, currentRows)
+	hasDeltas := Run(baselineRows, currentRows, false)
 
 	w.Close()
 	os.Stdout = oldStdout
@@ -134,6 +134,64 @@ func TestRun_NoOpChange_NotEmitted(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(out), []byte("No changes detected")) {
 		t.Error("expected 'No changes detected' in output")
+	}
+}
+
+func TestRun_NDJSON(t *testing.T) {
+	base := filepath.Join("..", "..", "tests", "fixtures", "probe_diff_baseline.ndjson")
+	curr := filepath.Join("..", "..", "tests", "fixtures", "probe_diff_current.ndjson")
+
+	baselineRows, err := ReadNDJSON(base)
+	if err != nil {
+		t.Fatalf("ReadNDJSON(baseline): %v", err)
+	}
+	currentRows, err := ReadNDJSON(curr)
+	if err != nil {
+		t.Fatalf("ReadNDJSON(current): %v", err)
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	hasDeltas := Run(baselineRows, currentRows, true)
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if !hasDeltas {
+		t.Error("Run with fixture data must return true (changes exist)")
+	}
+
+	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	if len(lines) == 0 {
+		t.Fatal("expected at least one NDJSON line")
+	}
+
+	var foundConfigFdesetup bool
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal(line, &row); err != nil {
+			t.Fatalf("invalid JSON line %q: %v", line, err)
+		}
+		if row["type"] != "diff" {
+			t.Errorf("every row must have type=diff, got %q", row["type"])
+		}
+		if row["diff_type"] == "probe_failure" {
+			if probe, _ := row["probe"].(string); probe == "config.fdesetup_status" {
+				if status, _ := row["status"].(string); status == "new" {
+					foundConfigFdesetup = true
+				}
+			}
+		}
+	}
+	if !foundConfigFdesetup {
+		t.Error("expected at least one probe_failure row with status=new and probe=config.fdesetup_status")
 	}
 }
 

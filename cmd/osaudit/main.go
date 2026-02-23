@@ -435,6 +435,7 @@ func runDiff(args []string) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	baseline := fs.String("baseline", "", "Path to baseline NDJSON file")
 	current := fs.String("current", "", "Path to current NDJSON file")
+	ndjson := fs.Bool("ndjson", false, "Emit structured diff rows as NDJSON instead of human-readable summary")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -460,7 +461,7 @@ func runDiff(args []string) int {
 		return 1
 	}
 
-	hasDeltas := diff.Run(baselineRows, currentRows)
+	hasDeltas := diff.Run(baselineRows, currentRows, *ndjson)
 	if hasDeltas {
 		return 2
 	}
@@ -472,7 +473,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  osaudit")
 	fmt.Fprintln(os.Stderr, "  osaudit list")
 	fmt.Fprintln(os.Stderr, "  osaudit run <id> -- [args...]")
-	fmt.Fprintln(os.Stderr, "  osaudit diff --baseline <path> --current <path>")
+	fmt.Fprintln(os.Stderr, "  osaudit diff --baseline <path> --current <path> [--ndjson]")
 }
 
 func exitCodeFromError(err error) int {
