@@ -12,8 +12,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE = REPO_ROOT / "tests" / "fixtures" / "probe_diff_baseline.ndjson"
 CURRENT = REPO_ROOT / "tests" / "fixtures" / "probe_diff_current.ndjson"
@@ -202,7 +200,8 @@ config.fdesetup_status\t1708600303300\t255
         assert network["first_ts_ms"] == 1708600301000
         assert network["last_ts_ms"] == 1708600303100
         assert network["duration_ms"] == 2100
-        assert network["failure_rate"] == pytest.approx(3 / 2.1, rel=0.01)
+        expected_rate = 3 / 2.1
+        assert abs(network["failure_rate"] - expected_rate) / expected_rate < 0.01
         assert network["exit_codes"] == {"1": 3}
         # config.fdesetup_status: 2×, mixed exit codes 1 and 255
         fdesetup = next(i for i in items if i["probe"] == "config.fdesetup_status")
