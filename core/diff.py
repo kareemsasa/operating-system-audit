@@ -378,17 +378,51 @@ def _probe_sort_key(probe, status):
     return (sev, status_order.get(status, 3), probe)
 
 
+def _norm_exit_codes(ec):
+    """Normalize keys so {"1":1} == {1:1} for comparison."""
+    if not ec:
+        return {}
+    out = {}
+    for k, v in ec.items():
+        try:
+            kk = int(k)
+        except Exception:
+            kk = k
+        out[kk] = int(v)
+    return dict(sorted(out.items(), key=lambda x: x[0]))
+
+
+def _probe_failure_is_changed(probe, base_it, curr_it):
+    """True only when stable fingerprint changed: count, exit_codes, or expected_state.
+    Ignore first_ts_ms, last_ts_ms, duration_ms, failure_rate — these vary run-to-run
+    even when the failure pattern is identical (e.g. 22 failures scattered across the run)."""
+    if base_it is None or curr_it is None:
+        return True
+
+    if int(base_it.get("count", 0)) != int(curr_it.get("count", 0)):
+        return True
+
+    if _norm_exit_codes(base_it.get("exit_codes")) != _norm_exit_codes(curr_it.get("exit_codes")):
+        return True
+
+    base_ec = base_it.get("exit_codes") or {}
+    curr_ec = curr_it.get("exit_codes") or {}
+    if probe_failure_expected_state(probe, base_ec) != probe_failure_expected_state(probe, curr_ec):
+        return True
+
+    return False
+
+
 def _build_probe_failure_entries(base_pf, curr_pf):
     base_probes = {it["probe"]: it for it in (base_pf.get("items") or [])} if base_pf else {}
     curr_probes = {it["probe"]: it for it in (curr_pf.get("items") or [])} if curr_pf else {}
     new_probes = set(curr_probes) - set(base_probes)
     resolved_probes = set(base_probes) - set(curr_probes)
     common = set(base_probes) & set(curr_probes)
-    changed_probes = [p for p in common if (
-        base_probes[p].get("count") != curr_probes[p].get("count")
-        or base_probes[p].get("exit_codes") != curr_probes[p].get("exit_codes")
-        or base_probes[p].get("duration_ms") != curr_probes[p].get("duration_ms")
-    )]
+    changed_probes = [
+        p for p in common
+        if _probe_failure_is_changed(p, base_probes[p], curr_probes[p])
+    ]
     entries = []
     for p in sorted(new_probes, key=lambda x: _probe_sort_key(x, "new")):
         entries.append(("new", p, None, curr_probes[p]))
@@ -446,16 +480,36 @@ def _format_probe_entry_changed(probe, base_it, curr_it):
     bc, cc = base_it.get("count", 0), curr_it.get("count", 0)
     ec_delta = exit_codes_delta(base_it.get("exit_codes"), curr_it.get("exit_codes"))
     delta_strs = [("{0}:{1:+d}".format(k, v)) for k, v in sorted(ec_delta.items(), key=lambda x: int(x[0])) if v != 0]
-    delta_str = ", ".join(delta_strs) if delta_strs else "count {0}→{1}".format(bc, cc)
     exp_suffix = probe_failure_expected_suffix(probe, curr_it.get("exit_codes"))
-    return "  ~ {0} {1}×→{2}×, exit_codes: {3}{4}".format(probe, bc, cc, delta_str, exp_suffix)
+    # Only show exit_codes fragment when histogram delta is non-empty
+    if delta_strs:
+        return "  ~ {0} {1}×→{2}×, exit_codes: {3}{4}".format(probe, bc, cc, ", ".join(delta_strs), exp_suffix)
+    return "  ~ {0} {1}×→{2}×{3}".format(probe, bc, cc, exp_suffix)
 
 
-def _print_probe_failures_delta(entries):
+def _emit_probe_failures_delta(base_pf, curr_pf, ndjson):
+    entries = _build_probe_failure_entries(base_pf, curr_pf)
+    if ndjson:
+        if not entries:
+            return False
+        for status, probe, base_it, curr_it in entries:
+            _emit_probe_failure_row(status, probe, base_it, curr_it)
+        return True
+    # Human-readable: always print section so user knows it ran
+    print("## Probe failures delta")
+    if not entries:
+        print("  No changes detected")
+    else:
+        _print_probe_failures_delta_body(entries)
+    print()
+    return bool(entries)
+
+
+def _print_probe_failures_delta_body(entries):
+    """Print topic groups and items (caller prints header)."""
     by_topic = {}
     for status, probe, base_it, curr_it in entries:
         by_topic.setdefault(probe_topic(probe), []).append((status, probe, base_it, curr_it))
-    print("## Probe failures delta")
     for topic in sorted(by_topic.keys(), key=lambda t: (TOPIC_ORDER.index(t) if t in TOPIC_ORDER else 99, t)):
         items = by_topic[topic]
         print("\n### {0}".format(topic))
@@ -466,19 +520,6 @@ def _print_probe_failures_delta(entries):
                 print(_format_probe_entry_resolved(probe, base_it))
             else:
                 print(_format_probe_entry_changed(probe, base_it, curr_it))
-    print()
-
-
-def _emit_probe_failures_delta(base_pf, curr_pf, ndjson):
-    entries = _build_probe_failure_entries(base_pf, curr_pf)
-    if not entries:
-        return False
-    if ndjson:
-        for status, probe, base_it, curr_it in entries:
-            _emit_probe_failure_row(status, probe, base_it, curr_it)
-    else:
-        _print_probe_failures_delta(entries)
-    return True
 
 
 def main():
@@ -506,6 +547,9 @@ def main():
 
     if not has_deltas and not ndjson:
         print("No changes detected between baseline and current.")
+
+    # Exit 0 = no changes, 2 = changes detected (diff convention), 1 = error (via die())
+    sys.exit(0 if not has_deltas else 2)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ Test probe_failures_summary diff formatting.
 Uses synthetic NDJSON fixtures to assert: tight burst, span+rate, (0.0/s) guard, mixed exit codes.
 Also tests message redaction rules (order: HOME_DIR, CURRENT_USER, /Users/username/, ANSI strip).
 """
+import json
 import re
 import subprocess
 import sys
@@ -27,7 +28,7 @@ def run_diff():
 
 def test_probe_diff_formatting():
     code, out, err = run_diff()
-    assert code == 0, f"diff failed: {err}"
+    assert code == 2, f"diff with changes must exit 2, got {code}: {err}"
     assert "## Probe failures delta" in out
 
     # Tight burst: count>1, duration_ms=0
@@ -65,6 +66,69 @@ def test_probe_diff_formatting():
         "identity.dscl_list_users should be under ### Identity"
 
     print("All probe diff formatting assertions passed.")
+
+
+def test_no_op_change_not_emitted():
+    """Probe with identical count, exit_codes, span, expected_state must NOT emit ~ Changed."""
+    import tempfile
+    meta = {"type": "meta", "run_id": "x", "timestamp": "2026-02-22T10:00:00Z"}
+    # Identical probe in both: count 22, exit_codes {1:22}, same timestamps
+    item = {
+        "probe": "config.defaults_firewall_globalstate",
+        "count": 22,
+        "first_ts_ms": 1708600000000,
+        "last_ts_ms": 1708600000000,
+        "duration_ms": 0,
+        "failure_rate": 22.0,
+        "exit_codes": {"1": 22},
+    }
+    base_pf = {"type": "probe_failures_summary", "run_id": "base", "items": [item]}
+    curr_pf = {"type": "probe_failures_summary", "run_id": "curr", "items": [item.copy()]}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".ndjson", delete=False) as f1:
+        for row in [meta, base_pf]:
+            f1.write(json.dumps(row) + "\n")
+        base_path = f1.name
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".ndjson", delete=False) as f2:
+        for row in [meta, curr_pf]:
+            f2.write(json.dumps(row) + "\n")
+        curr_path = f2.name
+    try:
+        result = subprocess.run(
+            [sys.executable, str(DIFF_PY), "--baseline", base_path, "--current", curr_path],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert result.returncode == 0, "diff with no changes must exit 0"
+        # Must NOT show ~ Changed for config.defaults_firewall_globalstate
+        assert "~ config.defaults_firewall_globalstate" not in result.stdout, (
+            "No-op change (22×→22×, same exit_codes) must not emit ~ Changed"
+        )
+        # Should report no changes
+        assert "No changes detected" in result.stdout
+    finally:
+        import os
+        os.unlink(base_path)
+        os.unlink(curr_path)
+
+
+def test_diff_exit_codes():
+    """Exit 0 = no changes, 2 = changes detected, 1 = error (diff convention)."""
+    result = subprocess.run(
+        [sys.executable, str(DIFF_PY), "--baseline", str(BASELINE), "--current", str(CURRENT)],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert result.returncode == 2, "fixtures have changes → exit 2"
+
+    result = subprocess.run(
+        [sys.executable, str(DIFF_PY), "--baseline", "/nonexistent.ndjson", "--current", str(CURRENT)],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert result.returncode == 1, "missing file → exit 1"
 
 
 def redact_stderr_message(msg, home_dir, current_user):
