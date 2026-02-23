@@ -5,7 +5,8 @@ __pycache__
 
 # Build artifacts
 dist/
-output/
+output/*
+!output/example-mac.json
 *.exe
 
 # OS junk
