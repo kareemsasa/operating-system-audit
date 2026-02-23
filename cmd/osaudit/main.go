@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/kareemsasa/operating-system-audit/internal/diff"
 )
 
 type manifest struct {
@@ -80,6 +83,8 @@ func run(args []string) int {
 		return 0
 	case "run":
 		return runSubcommand(commands, repoRoot, args[1:])
+	case "diff":
+		return runDiff(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n", args[0])
 		printUsage()
@@ -426,11 +431,48 @@ func printCommandList(commands []auditCommand) {
 	}
 }
 
+func runDiff(args []string) int {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	baseline := fs.String("baseline", "", "Path to baseline NDJSON file")
+	current := fs.String("current", "", "Path to current NDJSON file")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		printUsage()
+		return 2
+	}
+	if *baseline == "" || *current == "" {
+		fmt.Fprintln(os.Stderr, "diff requires --baseline and --current")
+		printUsage()
+		return 2
+	}
+
+	baselineRows, err := diff.ReadNDJSON(*baseline)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	currentRows, err := diff.ReadNDJSON(*current)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	_ = diff.GroupByType(baselineRows)
+	_ = diff.GroupByType(currentRows)
+
+	fmt.Printf("Parsed %d baseline rows, %d current rows\n", len(baselineRows), len(currentRows))
+	return 0
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  osaudit")
 	fmt.Fprintln(os.Stderr, "  osaudit list")
 	fmt.Fprintln(os.Stderr, "  osaudit run <id> -- [args...]")
+	fmt.Fprintln(os.Stderr, "  osaudit diff --baseline <path> --current <path>")
 }
 
 func exitCodeFromError(err error) int {

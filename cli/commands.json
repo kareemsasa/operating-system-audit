@@ -41,12 +41,6 @@
       "os": ["mac"],
       "display": "Persistence surfaces audit",
       "exec": ["audit/mac/persistence.sh"]
-    },
-    {
-      "id": "diff",
-      "os": ["mac", "linux"],
-      "display": "Diff two NDJSON audit reports",
-      "exec": ["core/diff.py"]
     }
   ]
 }
