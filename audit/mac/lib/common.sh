@@ -165,14 +165,19 @@ emit_probe_failed() {
     [ -n "$NDJSON_FILE" ] || return 0
     local probe="$1"
     local code="${2:-1}"
+    # Never record success as failure; exit 0 means probe succeeded.
+    [ "$code" -ne 0 ] 2>/dev/null || return 0
     local argv0="${3:-}"
     local count_key="${4:-$probe}"
     local message="${5:-}"
     local pf_file="${PROBE_FAILURES_FILE:-}"
     [ -n "$pf_file" ] || pf_file="$(dirname "$REPORT_FILE")/.probe-failures-$$.tmp"
+    PROBE_FAILURES_FILE="$pf_file"
     local ts
     ts=$(now_ms)
-    printf '%s\t%s\t%s\n' "$count_key" "$ts" "${code:-1}" >> "$pf_file" 2>/dev/null || true
+    if ! printf '%s\t%s\t%s\n' "$count_key" "$ts" "${code:-1}" >> "$pf_file" 2>/dev/null; then
+        record_soft_failure "probe_failures_file_write_failed:$pf_file"
+    fi
     local msg_json=""
     [ -n "$message" ] && msg_json=",\"message\":$(json_escape "$message")"
     append_ndjson_line "{\"type\":\"probe_failed\",\"run_id\":$(json_escape "$RUN_ID"),\"probe\":$(json_escape "$probe"),\"argv0\":$(json_escape "$argv0"),\"exit_code\":${code:-1},\"ts_ms\":${ts}${msg_json}}"

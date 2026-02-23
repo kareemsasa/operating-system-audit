@@ -124,6 +124,8 @@ fi
 
 _ndjson_requested=$WRITE_NDJSON
 audit_resolve_output_paths "full-audit"
+# One shared probe-failure log across subshells (command substitutions)
+export PROBE_FAILURES_FILE="$REPORT_DIR/.probe-failures-${RUN_ID}.tsv"
 if $_ndjson_requested && ! $WRITE_NDJSON; then
     METADATA_NOTES+=("NDJSON disabled because python3 is unavailable")
 fi
@@ -138,7 +140,7 @@ TOP_DOCUMENTS_FOLDERS_FILE="${TOP_DOCUMENTS_FOLDERS_FILE:-$REPORT_DIR/.full-audi
 : > "$TOP_DOCUMENTS_FOLDERS_FILE"
 TOP_PATHS_FILE="${TOP_PATHS_FILE:-$REPORT_DIR/.full-audit-top-paths-$TIMESTAMP_FOR_FILENAME.tsv}"
 : > "$TOP_PATHS_FILE"
-PROBE_FAILURES_FILE="${REPORT_DIR}/.probe-failures-$TIMESTAMP_FOR_FILENAME-$$.tmp"
+: > "$PROBE_FAILURES_FILE"
 
 source "$(dirname "$0")/lib/common.sh"
 
