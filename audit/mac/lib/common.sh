@@ -5,6 +5,9 @@ if [[ "${_COMMON_SH_LOADED:-0}" == "1" ]]; then
 fi
 _COMMON_SH_LOADED=1
 
+# Initialize before any trap/cleanup; avoids unbound variable with set -u when trap runs
+declare -a _COMMON_TMPFILES=()
+
 _common_require_var_set() {
     local name="$1"
     if [[ -z "${!name+x}" ]]; then
@@ -44,8 +47,6 @@ _common_validate_required_context || {
 }
 
 # Temp file cleanup - run on EXIT/INT/TERM
-_COMMON_TMPFILES=()
-
 _common_register_tmp() {
     local f="$1"
     [[ -n "$f" ]] && _COMMON_TMPFILES+=("$f")
@@ -53,7 +54,7 @@ _common_register_tmp() {
 
 _common_cleanup_tmps() {
     local f
-    for f in "${_COMMON_TMPFILES[@]}"; do
+    for f in "${_COMMON_TMPFILES[@]+"${_COMMON_TMPFILES[@]}"}"; do
         [[ -n "$f" ]] && rm -f "$f" 2>/dev/null || true
     done
     _COMMON_TMPFILES=()
