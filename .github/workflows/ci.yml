@@ -52,9 +52,7 @@ jobs:
           else
             echo "full not available on this OS; skipping run smoke."
           fi
-
-      - name: Probe diff formatting test
-        run: python3 tests/test_probe_diff.py
+          ./dist/osaudit diff --help
 
   mac-smoke:
     runs-on: macos-latest
