@@ -1,127 +1,100 @@
-# Operating System Audit
+# osaudit
 
-An audit tool for inspecting the observable state of an operating system. The CLI and manifest format are designed for cross-platform use; collectors are implemented per-OS.
+Know when your system changes.
 
-This project provides structured, conservative (read-only) audit capabilities. It is designed to help users understand disk usage, system artifacts, persistence surfaces, and environment state without modifying the system.
-
-The tool produces both human-readable reports and machine-readable telemetry suitable for automation, comparison, and ingestion into monitoring systems.
-
----
-
-## Platform Support
-
-| Platform | Status   |
-|----------|----------|
-| macOS    | Full     |
-| Linux    | Planned  |
-| Windows  | Planned  |
-
----
-
-## Design Principles
-
-**Read-only by default**  
-No audit operation deletes, modifies, or moves files.
-
-**Deterministic output**  
-Reports are stable and suitable for comparison over time.
-
-**Structured telemetry**  
-Machine-readable NDJSON output enables downstream analysis and normalization.
-
-**Per-OS collectors**  
-Audit collectors are implemented per-OS, with a unified interface layer.
-
-**Separation of concerns**
-
-- `audit/` → collectors (OS-specific)
-- `cli/` → execution interface
-- `cmd/osaudit/` → compiled user-facing binary
-- `core/` → visualization helpers (e.g. heatmap rendering)
-- `output/` → generated reports
-
----
-
-## Current Capabilities
-
-### macOS
-
-Full system audit:
-
-- Disk usage overview
-- Large file detection
-- Installer artifact detection (.dmg, .pkg, .zip)
-- Trash size analysis
-- Broken symlink detection
-- Node modules and Git repository footprint
-- Windows artifact detection (Thumbs.db, desktop.ini)
-- Metadata and system identification
-
-Outputs:
-
-- Markdown report
-- Optional NDJSON structured telemetry
-
----
-
-## Installation
-
-### From release (macOS/Linux)
-
-Download the latest binary for your OS and architecture:
+`osaudit` takes a read-only snapshot of your operating system — security config, network state, persistence surfaces, identity, running processes, and disk usage — then diffs snapshots over time to show exactly what changed.
 
 ```bash
-# Detect OS and arch (matches goreleaser: darwin/linux, amd64/arm64)
+# Take a snapshot
+osaudit run full -- --ndjson
+
+# A week later, take another and diff
+osaudit run full -- --ndjson
+osaudit diff --baseline old.ndjson --current new.ndjson
+```
+
+```
+## Probe failures delta
+
+### Security
+  + config.fdesetup_status failed 2× (tight burst), exit_codes: {1:1,255:1} (mixed)
+
+### Network
+  + network.ifconfig_iface failed 5× (tight burst), exit_codes: {1:5}
+  + network.ifconfig_list failed 12× (2024-02-22 11:11:41 → 2024-02-22 11:11:43 (5.71/s)), exit_codes: {1:12}
+
+### Identity
+  ~ identity.dscl_list_users 1×→3×, exit_codes: 70:+2 (expected)
+```
+
+Exit code 0 means nothing changed. Exit code 2 means something did.
+
+## Install
+
+**Binary (macOS/Linux):**
+
+```bash
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 [ "$ARCH" = "x86_64" ] && ARCH=amd64
 [ "$ARCH" = "aarch64" ] && ARCH=arm64
-curl -sSL "https://github.com/kareemsasa/operating-system-audit/releases/latest/download/osaudit_${OS}_${ARCH}.tar.gz" | tar xz -C /usr/local/bin osaudit
-chmod +x /usr/local/bin/osaudit
+curl -sSL "https://github.com/kareemsasa/operating-system-audit/releases/latest/download/osaudit_${OS}_${ARCH}.tar.gz" \
+  | tar xz -C /usr/local/bin osaudit
 ```
 
-### From source (Go)
+**From source:**
 
 ```bash
 go install github.com/kareemsasa/operating-system-audit/cmd/osaudit@latest
 ```
 
-### Build from repo
+## What it audits
 
-Clone the repository:
+| Module          | macOS probes                                                                                                         |
+| --------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Storage**     | Disk usage, large files, installers (.dmg/.pkg/.zip), trash, node_modules, git repos, broken symlinks, duplicates    |
+| **Network**     | Interfaces, listening ports, DNS, firewall status, stealth mode, active connections, Wi-Fi                           |
+| **Identity**    | Local users, admin group membership, sudo capability, SSH keys, authorized_keys, shell validation                    |
+| **Config**      | FileVault, SIP, Gatekeeper, firewall, remote login, screen lock, auto-updates, Homebrew, shell profiles, environment |
+| **Execution**   | Top processes (CPU/mem), cron jobs, LaunchAgents, login items, launchctl daemons                                     |
+| **Persistence** | LaunchDaemons, LaunchAgents (system + user), kernel extensions, system extensions, login hooks, auth plugins         |
 
-```bash
-git clone https://github.com/kareemsasa/operating-system-audit.git
-cd operating-system-audit
-```
-
-Build the CLI:
-
-```bash
-go build -o dist/osaudit ./cmd/osaudit
-```
-
-Run interactively:
+## Usage
 
 ```bash
-./dist/osaudit
+# Interactive menu
+osaudit
+
+# List available commands
+osaudit list
+
+# Run a specific audit
+osaudit run full -- --ndjson
+osaudit run network
+osaudit run config
+osaudit run storage -- --deep --ndjson
+
+# Diff two snapshots
+osaudit diff --baseline baseline.ndjson --current current.ndjson
+osaudit diff --baseline baseline.ndjson --current current.ndjson --ndjson
 ```
 
-List available commands for the detected OS:
+Every audit produces a Markdown report. Pass `--ndjson` to also get machine-readable output for diffing and automation.
 
-```bash
-./dist/osaudit list
-```
+## Platform support
 
-Run a command with pass-through flags:
+| Platform | Status    |
+| -------- | --------- |
+| macOS    | Supported |
+| Linux    | Planned   |
+| Windows  | Planned   |
 
-```bash
-./dist/osaudit run full -- --ndjson
-```
+## Design
 
-Command manifest shape is documented in `cli/commands.schema.json` for editor/CI validation.
+Read-only — nothing is deleted, modified, or moved. Reports are deterministic and suitable for comparison. The binary is self-contained (all scripts are embedded via `go:embed`).
 
-## CI
+Architecture: Go CLI dispatches to per-OS Bash collectors. The diff engine and subcommand routing are pure Go.
 
-GitHub Actions runs a fast CI workflow on pushes and pull requests.
-It verifies `go build` for `cmd/osaudit`, checks Bash script syntax, and runs lightweight CLI smoke tests (`list` and `--help`) without deep scans.
+## License
+
+[MIT](LICENSE)
