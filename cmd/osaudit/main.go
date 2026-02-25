@@ -257,10 +257,13 @@ func validateManifestCommand(repoRoot string, cmd auditCommand, index int, seenI
 	if !commandIDPattern.MatchString(id) {
 		return fmt.Errorf("%s: id must match %q", ref, commandIDPattern.String())
 	}
-	if firstIndex, exists := seenIDs[id]; exists {
-		return fmt.Errorf("%s: duplicate id %q (already defined at command[%d])", ref, id, firstIndex)
+	for _, osName := range cmd.OS {
+		key := osName + ":" + id
+		if firstIndex, exists := seenIDs[key]; exists {
+			return fmt.Errorf("%s: duplicate id %q for os %q (already defined at command[%d])", ref, id, osName, firstIndex)
+		}
+		seenIDs[key] = index
 	}
-	seenIDs[id] = index
 
 	if strings.TrimSpace(cmd.Display) == "" {
 		return fmt.Errorf("%s: display is required", ref)
