@@ -33,6 +33,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive data (user, hostname, tokens, commands)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -94,6 +95,10 @@ while (($# > 0)); do
             ;;
         --no-redact-paths)
             REDACT_PATHS_MODE="off"
+            shift
+            ;;
+        --redact-all)
+            REDACT_ALL=true
             shift
             ;;
         --no-color)
