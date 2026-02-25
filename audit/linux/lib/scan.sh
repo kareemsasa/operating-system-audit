@@ -76,9 +76,10 @@ emit_recommendations() {
     local desktop_mb="${RECOMMENDATIONS_DESKTOP_MB:-50}"
     local desktop_threshold=$((desktop_mb * 1024 * 1024))
     local recs=()
+    local installer_count=$((${deb_count:-0} + ${rpm_count:-0} + ${appimage_count:-0}))
 
     (( trash_bytes > 0 )) && recs+=("Empty Trash to reclaim $(human_size_kb $((trash_bytes / 1024)))")
-    (( (${dmg_count:-0} + ${pkg_count:-0}) > 0 )) && recs+=("Delete installer artifacts (.dmg/.pkg)")
+    (( installer_count > 0 )) && recs+=("Delete installer artifacts (.deb/.rpm/.AppImage) in Downloads")
     (( ${old_dl_count:-0} > 0 )) && recs+=("Review ${old_dl_count} stale files in Downloads (older than ${OLD_FILE_DAYS:-180} days)")
     (( ${dl_file_count:-0} > dl_threshold )) && recs+=("Downloads has ${dl_file_count} files — consider triaging")
     (( desktop_bytes > desktop_threshold )) && recs+=("Desktop is $(human_size_kb $((desktop_bytes / 1024))) — move items to Documents")
@@ -101,9 +102,9 @@ emit_recommendations() {
 }
 
 run_storage_audit() {
-    ds_count=0
-    dmg_count=0
-    pkg_count=0
+    deb_count=0
+    rpm_count=0
+    appimage_count=0
     zip_dl_count=0
     thumbs_db_count=0
     desktop_ini_count=0
@@ -171,12 +172,12 @@ run_storage_audit() {
         folder_bytes=$((kb * 1024))
         folder_ndjson_path=$(redact_path_for_ndjson "$folder")
         printf '%s\t%s\n' "$folder_bytes" "$folder_ndjson_path" >> "$TOP_PATHS_FILE"
-    done < <(du -sk "$HOME_DIR"/.??* 2>/dev/null | awk -v home="$HOME_DIR" -F'\t' '$2 != home "/.Trash" {print}' | sort -nr || true)
+    done < <(du -sk "$HOME_DIR"/.??* 2>/dev/null | awk -v home="$HOME_DIR" -F'\t' '$2 != home "/.local/share/Trash" {print}' | sort -nr || true)
     total_kb=$((total_kb + dotdir_kb))
 
     # Add Trash to total and stash for NDJSON reuse (single du -sk)
-    if [ -d "$HOME_DIR/.Trash" ]; then
-        trash_kb=$(du -sk "$HOME_DIR/.Trash" 2>/dev/null | awk '{print $1}') || true
+    if [ -d "$HOME_DIR/.local/share/Trash" ]; then
+        trash_kb=$(du -sk "$HOME_DIR/.local/share/Trash" 2>/dev/null | awk '{print $1}') || true
         trash_kb=${trash_kb:-0}
         OVERVIEW_KB_TRASH=$trash_kb
         total_kb=$((total_kb + trash_kb))
@@ -229,8 +230,8 @@ run_storage_audit() {
         done < <(
             find "$HOME_DIR/Downloads" -type f 2>/dev/null | while IFS= read -r f; do
                 [ -n "$f" ] || continue
-                bytes=$(stat -f%z "$f" 2>/dev/null || echo 0)
-                atime=$(stat -f%a "$f" 2>/dev/null || echo 0)
+                bytes=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null || echo 0)
+                atime=$(stat -c%X "$f" 2>/dev/null || stat -f%a "$f" 2>/dev/null || echo 0)
                 base=$(basename "$f")
                 ext="${base##*.}"
                 [[ "$ext" == "$base" ]] && ext=""
@@ -308,9 +309,6 @@ run_storage_audit() {
     while IFS= read -r path; do
         [ -n "$path" ] || continue
         base=$(basename "$path")
-        if [ "$base" = ".DS_Store" ]; then
-            ds_count=$((ds_count + 1))
-        fi
         if [ "$base" = "Thumbs.db" ]; then
             thumbs_db_count=$((thumbs_db_count + 1))
         fi
@@ -321,8 +319,7 @@ run_storage_audit() {
             broken_links=$((broken_links + 1))
         fi
     done < <(
-        find "$HOME_DIR" \( -path "*/Library" -o -path "*/.Trash" \) -prune -o \( \
-            -name ".DS_Store" -o \
+        find "$HOME_DIR" \( -path "*/.local/share/Trash" \) -prune -o \( \
             -name "Thumbs.db" -o \
             -name "desktop.ini" -o \
             -type l ! -exec test -e {} \; \
@@ -332,23 +329,36 @@ run_storage_audit() {
     junk_scan_end_ms=$(now_ms)
     emit_timing "junk_scan_combined" "$junk_scan_start_ms" "$junk_scan_end_ms"
 
-    echo -e "  .DS_Store files: ${YELLOW}$ds_count${NC}"
-    echo "- **\`.DS_Store\` files:** $ds_count" >> "$REPORT_FILE"
-
     installers_start_ms=$(now_ms)
-    declare -a dmg_files=()
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        dmg_files+=("$f")
-    done < <(scoped_find_pruned -type f -name "*.dmg" | sort)
-    dmg_count=${#dmg_files[@]}
-    echo -e "  .dmg installers: ${YELLOW}$dmg_count${NC}"
-    echo "- **\`.dmg\` installers:** $dmg_count" >> "$REPORT_FILE"
+    declare -a deb_files=()
+    declare -a rpm_files=()
+    declare -a appimage_files=()
+    if [ -d "$HOME_DIR/Downloads" ]; then
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "${f,,}" in
+                *.deb) deb_files+=("$f") ;;
+                *.rpm) rpm_files+=("$f") ;;
+                *.appimage) appimage_files+=("$f") ;;
+            esac
+        done < <(find "$HOME_DIR/Downloads" -type f \( -name "*.deb" -o -name "*.rpm" -o -iname "*.appimage" \) 2>/dev/null)
+    fi
+    deb_count=${#deb_files[@]}
+    rpm_count=${#rpm_files[@]}
+    appimage_count=${#appimage_files[@]}
+    echo -e "  .deb installers in Downloads: ${YELLOW}$deb_count${NC}"
+    echo "- **\`.deb\` installers in Downloads:** $deb_count" >> "$REPORT_FILE"
+    echo -e "  .rpm installers in Downloads: ${YELLOW}$rpm_count${NC}"
+    echo "- **\`.rpm\` installers in Downloads:** $rpm_count" >> "$REPORT_FILE"
+    echo -e "  .AppImage in Downloads: ${YELLOW}$appimage_count${NC}"
+    echo "- **\`.AppImage\` in Downloads:** $appimage_count" >> "$REPORT_FILE"
 
-    if (( dmg_count > 0 )); then
+    installer_total=$((deb_count + rpm_count + appimage_count))
+    if (( installer_total > 0 )); then
         echo "" >> "$REPORT_FILE"
-        echo "  DMG files found:" >> "$REPORT_FILE"
-        for f in "${dmg_files[@]}"; do
+        echo "  Installer files found in Downloads:" >> "$REPORT_FILE"
+        for f in "${deb_files[@]}" "${rpm_files[@]}" "${appimage_files[@]}"; do
+            [ -n "$f" ] || continue
             rel="${f#$HOME_DIR/}"
             fsize=$(du -sh "$f" 2>/dev/null | cut -f1)
             echo -e "    ${CYAN}$fsize${NC}  $rel"
@@ -356,11 +366,6 @@ run_storage_audit() {
         done
         echo "" >> "$REPORT_FILE"
     fi
-
-    pkg_count=$(scoped_find_pruned -type f -name "*.pkg" | count_lines) || true
-    pkg_count=${pkg_count:-0}
-    echo -e "  .pkg installers: ${YELLOW}$pkg_count${NC}"
-    echo "- **\`.pkg\` installers:** $pkg_count" >> "$REPORT_FILE"
 
     if [ -d "$HOME_DIR/Downloads" ]; then
         zip_note=""
@@ -399,7 +404,7 @@ run_storage_audit() {
         echo "| Type | Count | Total Size |" >> "$REPORT_FILE"
         echo "|------|-------|------------|" >> "$REPORT_FILE"
 
-        for ext in pdf dmg zip pkg png jpg jpeg gif mp4 mov mp3 doc docx xls xlsx csv txt html js py sh; do
+        for ext in pdf deb rpm appimage zip png jpg jpeg gif mp4 mov mp3 doc docx xls xlsx csv txt html js py sh; do
             eval "count=\${ext_${ext}_count:-0}"
             if (( count > 0 )); then
                 eval "ext_bytes=\${ext_${ext}_bytes:-0}"
@@ -615,16 +620,21 @@ run_storage_audit() {
     trash_start_ms=$(now_ms)
     section_header "🗑️ Trash"
 
-    TRASH_DIR="$HOME_DIR/.Trash"
+    TRASH_DIR="$HOME_DIR/.local/share/Trash"
+    TRASH_FILES_DIR="$HOME_DIR/.local/share/Trash/files"
     if [ -d "$TRASH_DIR" ]; then
         trash_kb=${OVERVIEW_KB_TRASH:-0}
         trash_size=$(human_size_kb "$trash_kb")
-        trash_count="$(soft_out_probe "storage.find_trash_items" find "$TRASH_DIR" -mindepth 1 -maxdepth 1 | count_lines)"
+        if [ -d "$TRASH_FILES_DIR" ]; then
+            trash_count="$(soft_out_probe "storage.find_trash_items" find "$TRASH_FILES_DIR" -mindepth 1 -maxdepth 1 | count_lines)"
+        else
+            trash_count="$(soft_out_probe "storage.find_trash_items" find "$TRASH_DIR" -mindepth 1 -maxdepth 1 | count_lines)"
+        fi
         trash_count=${trash_count:-0}
         echo -e "  Trash size: ${BOLD}$trash_size${NC} ($trash_count files)"
         echo "**Trash size:** $trash_size ($trash_count files)" >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
-        echo "_Empty Trash in Finder to reclaim this space._" >> "$REPORT_FILE"
+        echo "_Empty Trash from your file manager or run \`rm -rf ~/.local/share/Trash/files/*\` to reclaim this space._" >> "$REPORT_FILE"
     else
         echo -e "  ${GREEN}Trash is empty${NC}"
         echo "_Trash is empty._" >> "$REPORT_FILE"
@@ -640,8 +650,8 @@ run_storage_audit() {
         documents_bytes=$((${OVERVIEW_KB_DOCUMENTS:-0} * 1024))
         trash_bytes=$((${OVERVIEW_KB_TRASH:-0} * 1024))
         append_ndjson_line "{\"type\":\"summary\",\"run_id\":$(json_escape "$RUN_ID"),\"home_bytes\":${home_bytes:-0},\"downloads_bytes\":${downloads_bytes:-0},\"desktop_bytes\":${desktop_bytes:-0},\"documents_bytes\":${documents_bytes:-0},\"trash_bytes\":${trash_bytes:-0}}"
-        append_ndjson_line "{\"type\":\"counts\",\"run_id\":$(json_escape "$RUN_ID"),\"large_files\":${large_count:-0},\"ds_store\":${ds_count:-0},\"thumbs_db\":${thumbs_db_count:-0},\"desktop_ini\":${desktop_ini_count:-0},\"windows_artifacts\":${thumbs_count:-0},\"zip_downloads\":${zip_dl_count:-0},\"dmg\":${dmg_count:-0},\"pkg\":${pkg_count:-0},\"broken_symlinks\":${broken_links:-0},\"node_modules\":${nm_count:-0},\"venv_cache\":${venv_count:-0},\"venv_dirs\":${venv_dirs_count:-0},\"pycache_dirs\":${pycache_dirs_count:-0},\"git_repos\":${git_count:-0},\"potential_duplicates\":${dup_found:-0},\"downloads_stale\":${old_dl_count:-0}}"
-        append_ndjson_line "{\"type\":\"junk_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"ds_store_count\":${ds_count:-0},\"dmg_count\":${dmg_count:-0},\"pkg_count\":${pkg_count:-0},\"zip_downloads_count\":${zip_dl_count:-0},\"windows_artifacts_count\":${thumbs_count:-0},\"broken_symlinks_count\":${broken_links:-0}}"
+        append_ndjson_line "{\"type\":\"counts\",\"run_id\":$(json_escape "$RUN_ID"),\"large_files\":${large_count:-0},\"thumbs_db\":${thumbs_db_count:-0},\"desktop_ini\":${desktop_ini_count:-0},\"windows_artifacts\":${thumbs_count:-0},\"zip_downloads\":${zip_dl_count:-0},\"deb\":${deb_count:-0},\"rpm\":${rpm_count:-0},\"appimage\":${appimage_count:-0},\"broken_symlinks\":${broken_links:-0},\"node_modules\":${nm_count:-0},\"venv_cache\":${venv_count:-0},\"venv_dirs\":${venv_dirs_count:-0},\"pycache_dirs\":${pycache_dirs_count:-0},\"git_repos\":${git_count:-0},\"potential_duplicates\":${dup_found:-0},\"downloads_stale\":${old_dl_count:-0}}"
+        append_ndjson_line "{\"type\":\"junk_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"deb_count\":${deb_count:-0},\"rpm_count\":${rpm_count:-0},\"appimage_count\":${appimage_count:-0},\"zip_downloads_count\":${zip_dl_count:-0},\"windows_artifacts_count\":${thumbs_count:-0},\"broken_symlinks_count\":${broken_links:-0}}"
         append_ndjson_line "{\"type\":\"downloads_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"total_bytes\":${downloads_bytes:-0},\"file_count\":${dl_file_count:-0},\"old_file_count\":${old_dl_count:-0},\"old_total_bytes\":${old_dl_bytes:-0}}"
         append_ndjson_line "{\"type\":\"dev_bloat_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"node_modules_dirs\":${nm_count:-0},\"python_venvs\":${venv_count:-0},\"python_venv_dirs\":${venv_dirs_count:-0},\"pycache_dirs\":${pycache_dirs_count:-0},\"git_repos\":${git_count:-0}}"
         append_ndjson_line "{\"type\":\"trash_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"total_bytes\":${trash_bytes:-0},\"file_count\":${trash_count:-0}}"
