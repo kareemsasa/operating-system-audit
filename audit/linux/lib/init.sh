@@ -27,6 +27,7 @@ audit_set_defaults_if_unset() {
     WRITE_NDJSON="${WRITE_NDJSON:-false}"
     REDACT_PATHS_MODE="${REDACT_PATHS_MODE:-auto}"
     REDACT_PATHS="${REDACT_PATHS:-false}"
+    REDACT_ALL="${REDACT_ALL:-false}"
 
     TIMESTAMP_FOR_FILENAME="${TIMESTAMP_FOR_FILENAME:-$(date +"%Y%m%d-%H%M%S")}"
     ISO_TIMESTAMP="${ISO_TIMESTAMP:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
@@ -123,6 +124,10 @@ audit_parse_args() {
 # Example: audit_resolve_output_paths "config-audit"
 audit_resolve_output_paths() {
     local report_suffix="${1:-audit}"
+
+    if [[ "${REDACT_ALL:-false}" == "true" ]]; then
+        REDACT_PATHS=true
+    fi
 
     if $WRITE_NDJSON; then
         case "$REDACT_PATHS_MODE" in
