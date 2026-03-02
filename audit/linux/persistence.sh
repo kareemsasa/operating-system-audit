@@ -17,6 +17,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -49,7 +50,7 @@ persistence_write_report_header_if_needed() {
     if [[ "${PERSISTENCE_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # 🧷 Linux Persistence Surfaces Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -97,15 +98,15 @@ run_persistence_audit() {
     # -------------------------------------------------------------------------
     section_start_ms=$(now_ms)
     section_header "🔧 Enabled System Services"
-    echo "| Unit | State |" >> "$REPORT_FILE"
-    echo "|------|-------|" >> "$REPORT_FILE"
+    report_append "| Unit | State |"
+    report_append "|------|-------|"
     local service_items=""
     if command -v systemctl >/dev/null 2>&1; then
         local line_count=0
         while IFS=$'\t' read -r unit state; do
             [ -n "$unit" ] || continue
             if (( line_count < 30 )); then
-                echo "| \`$unit\` | $state |" >> "$REPORT_FILE"
+                report_append "| \`$unit\` | $state |"
                 item="{\"unit\":$(json_escape "$unit"),\"state\":$(json_escape "$state")}"
                 if [ -z "$service_items" ]; then
                     service_items="$item"
@@ -118,7 +119,7 @@ run_persistence_audit() {
         done < <(soft_out_probe "persistence.systemctl_enabled" systemctl list-unit-files --type=service --state=enabled --no-pager --no-legend 2>/dev/null | awk '{print $1 "\t" $2}')
     fi
     if (( enabled_services_count == 0 )); then
-        echo "_No enabled system services found (systemctl unavailable or no enabled units)._" >> "$REPORT_FILE"
+        report_append "_No enabled system services found (systemctl unavailable or no enabled units)._"
     fi
     append_ndjson_line "{\"type\":\"enabled_services\",\"run_id\":$(json_escape "$RUN_ID"),\"count\":${enabled_services_count:-0},\"items\":[${service_items}]}"
     section_end_ms=$(now_ms)
@@ -129,13 +130,13 @@ run_persistence_audit() {
     # -------------------------------------------------------------------------
     section_start_ms=$(now_ms)
     section_header "👤 User Systemd Services"
-    echo "| Unit | State |" >> "$REPORT_FILE"
-    echo "|------|-------|" >> "$REPORT_FILE"
+    report_append "| Unit | State |"
+    report_append "|------|-------|"
     local user_service_items=""
     if command -v systemctl >/dev/null 2>&1; then
         while IFS=$'\t' read -r unit state; do
             [ -n "$unit" ] || continue
-            echo "| \`$unit\` | $state |" >> "$REPORT_FILE"
+            report_append "| \`$unit\` | $state |"
             item="{\"unit\":$(json_escape "$unit"),\"state\":$(json_escape "$state")}"
             if [ -z "$user_service_items" ]; then
                 user_service_items="$item"
@@ -146,7 +147,7 @@ run_persistence_audit() {
         done < <(soft_out_probe "persistence.systemctl_user_services" systemctl --user list-unit-files --type=service --no-pager --no-legend 2>/dev/null | awk '$2 == "enabled" || $2 == "static" {print $1 "\t" $2}')
     fi
     if (( user_services_count == 0 )); then
-        echo "_No user services found (systemctl unavailable or no enabled/static units)._" >> "$REPORT_FILE"
+        report_append "_No user services found (systemctl unavailable or no enabled/static units)._"
     fi
     append_ndjson_line "{\"type\":\"user_services\",\"run_id\":$(json_escape "$RUN_ID"),\"count\":${user_services_count:-0},\"items\":[${user_service_items}]}"
     section_end_ms=$(now_ms)
@@ -157,12 +158,12 @@ run_persistence_audit() {
     # -------------------------------------------------------------------------
     section_start_ms=$(now_ms)
     section_header "🧩 Loaded Kernel Modules"
-    echo "| Module | Size | Used by |" >> "$REPORT_FILE"
-    echo "|--------|------|---------|" >> "$REPORT_FILE"
+    report_append "| Module | Size | Used by |"
+    report_append "|--------|------|---------|"
     local module_items=""
     while IFS=$'\t' read -r mod size used; do
         [ -n "$mod" ] || continue
-        echo "| \`$mod\` | $size | $used |" >> "$REPORT_FILE"
+        report_append "| \`$mod\` | $size | $used |"
         item="{\"module\":$(json_escape "$mod"),\"size\":$(json_escape "$size"),\"used_by\":$(json_escape "$used")}"
         if [ -z "$module_items" ]; then
             module_items="$item"
@@ -172,7 +173,7 @@ run_persistence_audit() {
         kernel_modules_count=$((kernel_modules_count + 1))
     done < <(soft_out_probe "persistence.lsmod" lsmod 2>/dev/null | awk 'NR>1 {print $1 "\t" $2 "\t" $3}')
     if (( kernel_modules_count == 0 )); then
-        echo "_No loaded kernel modules found._" >> "$REPORT_FILE"
+        report_append "_No loaded kernel modules found._"
     fi
     append_ndjson_line "{\"type\":\"kernel_modules\",\"run_id\":$(json_escape "$RUN_ID"),\"count\":${kernel_modules_count:-0},\"items\":[${module_items}]}"
     section_end_ms=$(now_ms)
@@ -193,7 +194,7 @@ run_persistence_audit() {
         fi
         name="${name:-$(basename "$desktop")}"
         safe_path="$(redact_path_for_ndjson "$desktop")"
-        echo "- \`$safe_path\` — **$name**" >> "$REPORT_FILE"
+        report_append "- \`$safe_path\` — **$name**"
         item="{\"path\":$(json_escape "$safe_path"),\"name\":$(json_escape "$name")}"
         if [ -z "$autostart_items" ]; then
             autostart_items="$item"
@@ -204,7 +205,7 @@ run_persistence_audit() {
     done
     shopt -u nullglob
     if (( xdg_autostart_count == 0 )); then
-        echo "_No XDG autostart entries found._" >> "$REPORT_FILE"
+        report_append "_No XDG autostart entries found._"
     fi
     append_ndjson_line "{\"type\":\"xdg_autostart\",\"run_id\":$(json_escape "$RUN_ID"),\"count\":${xdg_autostart_count:-0},\"items\":[${autostart_items}]}"
     section_end_ms=$(now_ms)
@@ -220,9 +221,9 @@ run_persistence_audit() {
         local default_pam="other|common-auth|common-account|common-password|common-session|login|passwd|sshd|su|sudo|system-auth|chfn|chsh|runuser|runuser-l|remote|config-util|newusers|chpasswd|rlogin|rsh|su-l|system-local-login|system-login|system-remote-login|system-services"
         pam_non_default_count=$(soft_out_probe "persistence.pam_non_default" ls /etc/pam.d 2>/dev/null | grep -vE "^($default_pam)$" | wc -l | tr -d ' ' || true)
         pam_non_default_count=${pam_non_default_count:-0}
-        echo "- Non-default PAM config files in \`/etc/pam.d/\`: **${pam_non_default_count}**" >> "$REPORT_FILE"
+        report_append "- Non-default PAM config files in \`/etc/pam.d/\`: **${pam_non_default_count}**"
     else
-        echo "- \`/etc/pam.d/\` directory not present." >> "$REPORT_FILE"
+        report_append "- \`/etc/pam.d/\` directory not present."
     fi
     append_ndjson_line "{\"type\":\"pam_config\",\"run_id\":$(json_escape "$RUN_ID"),\"non_default_count\":${pam_non_default_count:-0}}"
     section_end_ms=$(now_ms)
@@ -236,25 +237,25 @@ run_persistence_audit() {
     if [ -d /etc/init.d ]; then
         init_d_count=$(soft_out_probe "persistence.initd_list" ls /etc/init.d 2>/dev/null | wc -l | tr -d ' ' || true)
         init_d_count=${init_d_count:-0}
-        echo "- Scripts in \`/etc/init.d/\`: **${init_d_count}**" >> "$REPORT_FILE"
+        report_append "- Scripts in \`/etc/init.d/\`: **${init_d_count}**"
         if (( init_d_count > 0 )) && (( init_d_count <= 30 )); then
-            echo "" >> "$REPORT_FILE"
+            report_append ""
             while IFS= read -r script; do
                 [ -n "$script" ] || continue
-                echo "  - \`$script\`" >> "$REPORT_FILE"
+                report_append "  - \`$script\`"
             done < <(soft_out_probe "persistence.initd_list" ls /etc/init.d 2>/dev/null)
         fi
     else
-        echo "- \`/etc/init.d/\` directory does not exist." >> "$REPORT_FILE"
+        report_append "- \`/etc/init.d/\` directory does not exist."
     fi
     if [ -f /etc/rc.local ]; then
         rc_local_exists=true
         if [ -x /etc/rc.local ]; then
             rc_local_executable=true
         fi
-        echo "- \`/etc/rc.local\`: exists, executable: **$rc_local_executable**" >> "$REPORT_FILE"
+        report_append "- \`/etc/rc.local\`: exists, executable: **$rc_local_executable**"
     else
-        echo "- \`/etc/rc.local\`: not present" >> "$REPORT_FILE"
+        report_append "- \`/etc/rc.local\`: not present"
     fi
     append_ndjson_line "{\"type\":\"sysv_init\",\"run_id\":$(json_escape "$RUN_ID"),\"init_d_count\":${init_d_count:-0},\"rc_local_exists\":$rc_local_exists,\"rc_local_executable\":$rc_local_executable}"
     section_end_ms=$(now_ms)
@@ -268,16 +269,16 @@ run_persistence_audit() {
     if command -v dkms >/dev/null 2>&1; then
         dkms_out="$(soft_out_probe "persistence.dkms_status" dkms status 2>/dev/null)"
         if [ -n "$dkms_out" ]; then
-            echo '```' >> "$REPORT_FILE"
-            echo "$dkms_out" >> "$REPORT_FILE"
-            echo '```' >> "$REPORT_FILE"
+            report_append '```'
+            report_append "$dkms_out"
+            report_append '```'
             dkms_count=$(echo "$dkms_out" | grep -c . || true)
             dkms_count=${dkms_count:-0}
         else
-            echo "_No DKMS modules or dkms status returned empty._" >> "$REPORT_FILE"
+            report_append "_No DKMS modules or dkms status returned empty._"
         fi
     else
-        echo "_dkms command not available._" >> "$REPORT_FILE"
+        report_append "_dkms command not available._"
     fi
     append_ndjson_line "{\"type\":\"dkms_modules\",\"run_id\":$(json_escape "$RUN_ID"),\"output_lines\":${dkms_count:-0}}"
     section_end_ms=$(now_ms)

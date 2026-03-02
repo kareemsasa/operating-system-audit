@@ -17,6 +17,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -49,7 +50,7 @@ config_write_report_header_if_needed() {
     if [[ "${CONFIG_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # ⚙️ Mac System Configuration Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -113,13 +114,13 @@ run_config_audit() {
     screen_lock_delay="${screen_lock_delay:-unset}"
     auto_updates="$(soft_out_probe "config.softwareupdate_schedule" softwareupdate --schedule)"
     auto_updates="${auto_updates:-unknown}"
-    echo "- FileVault enabled: **$filevault**" >> "$REPORT_FILE"
-    echo "- SIP enabled: **$sip**" >> "$REPORT_FILE"
-    echo "- Gatekeeper enabled: **$gatekeeper**" >> "$REPORT_FILE"
-    echo "- Firewall enabled: **$firewall**" >> "$REPORT_FILE"
-    echo "- Remote Login (SSH): \`$remote_login\`" >> "$REPORT_FILE"
-    echo "- Screen lock delay: \`$screen_lock_delay\`" >> "$REPORT_FILE"
-    echo "- Auto updates: \`$auto_updates\`" >> "$REPORT_FILE"
+    report_append "- FileVault enabled: **$filevault**"
+    report_append "- SIP enabled: **$sip**"
+    report_append "- Gatekeeper enabled: **$gatekeeper**"
+    report_append "- Firewall enabled: **$firewall**"
+    report_append "- Remote Login (SSH): \`$remote_login\`"
+    report_append "- Screen lock delay: \`$screen_lock_delay\`"
+    report_append "- Auto updates: \`$auto_updates\`"
     append_ndjson_line "{\"type\":\"security_config\",\"run_id\":$(json_escape "$RUN_ID"),\"filevault\":$filevault,\"sip\":$sip,\"gatekeeper\":$gatekeeper,\"firewall\":$firewall}"
     section_end_ms=$(now_ms)
     emit_timing "security_defaults" "$section_start_ms" "$section_end_ms"
@@ -130,10 +131,10 @@ run_config_audit() {
     if [ "${REDACT_PATHS:-false}" = true ]; then
         path_value="$(echo "$path_value" | sed "s#$HOME_DIR#~#g; s#/${CURRENT_USER}/#/<user>/#g")"
     fi
-    echo "- PATH: \`$path_value\`" >> "$REPORT_FILE"
-    echo "- SHELL: \`${SHELL:-unknown}\`" >> "$REPORT_FILE"
-    echo "- LANG: \`${LANG:-unknown}\`" >> "$REPORT_FILE"
-    echo "- TERM: \`${TERM:-unknown}\`" >> "$REPORT_FILE"
+    report_append "- PATH: \`$path_value\`"
+    report_append "- SHELL: \`${SHELL:-unknown}\`"
+    report_append "- LANG: \`${LANG:-unknown}\`"
+    report_append "- TERM: \`${TERM:-unknown}\`"
     section_end_ms=$(now_ms)
     emit_timing "environment_overview" "$section_start_ms" "$section_end_ms"
 
@@ -151,27 +152,27 @@ run_config_audit() {
         brew_formulae="${brew_formulae:-0}"
         brew_casks="${brew_casks:-0}"
     fi
-    echo "- Homebrew installed: **$homebrew_installed**" >> "$REPORT_FILE"
-    echo "- Homebrew prefix: \`$brew_prefix\`" >> "$REPORT_FILE"
-    echo "- Installed formulae: **${brew_formulae:-0}**" >> "$REPORT_FILE"
-    echo "- Installed casks: **${brew_casks:-0}**" >> "$REPORT_FILE"
+    report_append "- Homebrew installed: **$homebrew_installed**"
+    report_append "- Homebrew prefix: \`$brew_prefix\`"
+    report_append "- Installed formulae: **${brew_formulae:-0}**"
+    report_append "- Installed casks: **${brew_casks:-0}**"
     append_ndjson_line "{\"type\":\"homebrew_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"installed\":$homebrew_installed,\"formulae\":${brew_formulae:-0},\"casks\":${brew_casks:-0}}"
     section_end_ms=$(now_ms)
     emit_timing "homebrew_summary" "$section_start_ms" "$section_end_ms"
 
     section_start_ms=$(now_ms)
     section_header "📄 Shell Profile Files"
-    echo "Existing shell profile files:" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
+    report_append "Existing shell profile files:"
+    report_append ""
     for rc in "$HOME_DIR/.zshrc" "$HOME_DIR/.zprofile" "$HOME_DIR/.zshenv" "$HOME_DIR/.bashrc" "$HOME_DIR/.bash_profile" "$HOME_DIR/.profile"; do
         if [ -f "$rc" ]; then
             safe_rc="$(redact_path_for_ndjson "$rc")"
-            echo "- \`$safe_rc\`" >> "$REPORT_FILE"
+            report_append "- \`$safe_rc\`"
             profile_files_count=$((profile_files_count + 1))
         fi
     done
     if (( profile_files_count == 0 )); then
-        echo "_No common profile files found._" >> "$REPORT_FILE"
+        report_append "_No common profile files found._"
     fi
     section_end_ms=$(now_ms)
     emit_timing "shell_profile_files" "$section_start_ms" "$section_end_ms"

@@ -17,6 +17,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -49,7 +50,7 @@ config_write_report_header_if_needed() {
     if [[ "${CONFIG_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # ⚙️ Linux System Configuration Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -105,7 +106,7 @@ run_config_audit() {
             luks_encrypted=true
         fi
     fi
-    echo "- Disk encryption (LUKS): **$luks_encrypted**" >> "$REPORT_FILE"
+    report_append "- Disk encryption (LUKS): **$luks_encrypted**"
 
     # Secure Boot
     if command -v mokutil >/dev/null 2>&1; then
@@ -114,7 +115,7 @@ run_config_audit() {
             secure_boot=true
         fi
     fi
-    echo "- Secure Boot: **$secure_boot**" >> "$REPORT_FILE"
+    report_append "- Secure Boot: **$secure_boot**"
 
     # Firewall (detect backend)
     firewall_backend="unknown"
@@ -145,8 +146,8 @@ run_config_audit() {
             firewall_backend="iptables"
         fi
     fi
-    echo "- Firewall enabled: **$firewall**" >> "$REPORT_FILE"
-    echo "- Firewall backend: **$firewall_backend**" >> "$REPORT_FILE"
+    report_append "- Firewall enabled: **$firewall**"
+    report_append "- Firewall backend: **$firewall_backend**"
 
     # SSH daemon
     sshd_active="unknown"
@@ -157,7 +158,7 @@ run_config_audit() {
             sshd_active="inactive"
         fi
     fi
-    echo "- SSH daemon: **$sshd_active**" >> "$REPORT_FILE"
+    report_append "- SSH daemon: **$sshd_active**"
 
     # SELinux / AppArmor
     if command -v getenforce >/dev/null 2>&1; then
@@ -172,7 +173,7 @@ run_config_audit() {
             mac_framework="AppArmor (disabled)"
         fi
     fi
-    echo "- Mandatory access control: **$mac_framework**" >> "$REPORT_FILE"
+    report_append "- Mandatory access control: **$mac_framework**"
 
     # Auto updates
     auto_updates="unknown"
@@ -187,7 +188,7 @@ run_config_audit() {
             auto_updates="none detected"
         fi
     fi
-    echo "- Auto updates: **$auto_updates**" >> "$REPORT_FILE"
+    report_append "- Auto updates: **$auto_updates**"
 
     append_ndjson_line "{\"type\":\"security_config\",\"run_id\":$(json_escape "$RUN_ID"),\"luks_encrypted\":$luks_encrypted,\"secure_boot\":$secure_boot,\"firewall\":$firewall,\"firewall_backend\":$(json_escape "$firewall_backend"),\"mac_framework\":$(json_escape "$mac_framework")}"
     section_end_ms=$(now_ms)
@@ -199,12 +200,12 @@ run_config_audit() {
     if [ "${REDACT_PATHS:-false}" = true ]; then
         path_value="$(echo "$path_value" | sed "s#$HOME_DIR#~#g; s#/${CURRENT_USER}/#/<user>/#g")"
     fi
-    echo "- PATH: \`$path_value\`" >> "$REPORT_FILE"
-    echo "- SHELL: \`${SHELL:-unknown}\`" >> "$REPORT_FILE"
-    echo "- LANG: \`${LANG:-unknown}\`" >> "$REPORT_FILE"
-    echo "- TERM: \`${TERM:-unknown}\`" >> "$REPORT_FILE"
-    echo "- XDG_SESSION_TYPE: \`${XDG_SESSION_TYPE:-unknown}\`" >> "$REPORT_FILE"
-    echo "- XDG_CURRENT_DESKTOP: \`${XDG_CURRENT_DESKTOP:-unknown}\`" >> "$REPORT_FILE"
+    report_append "- PATH: \`$path_value\`"
+    report_append "- SHELL: \`${SHELL:-unknown}\`"
+    report_append "- LANG: \`${LANG:-unknown}\`"
+    report_append "- TERM: \`${TERM:-unknown}\`"
+    report_append "- XDG_SESSION_TYPE: \`${XDG_SESSION_TYPE:-unknown}\`"
+    report_append "- XDG_CURRENT_DESKTOP: \`${XDG_CURRENT_DESKTOP:-unknown}\`"
     section_end_ms=$(now_ms)
     emit_timing "environment_overview" "$section_start_ms" "$section_end_ms"
 
@@ -213,37 +214,37 @@ run_config_audit() {
     local pkg_managers_found=0
     if command -v pacman >/dev/null 2>&1; then
         pacman_count="$(pacman -Q 2>/dev/null | wc -l | tr -d ' ' || true)"
-        echo "- **pacman**: ${pacman_count:-0} packages" >> "$REPORT_FILE"
+        report_append "- **pacman**: ${pacman_count:-0} packages"
         pkg_managers_found=$((pkg_managers_found + 1))
     fi
     if command -v dpkg >/dev/null 2>&1; then
         dpkg_count="$(dpkg --list 2>/dev/null | awk '/^ii/ {c++} END{print c+0}' || true)"
-        echo "- **dpkg**: ${dpkg_count:-0} packages" >> "$REPORT_FILE"
+        report_append "- **dpkg**: ${dpkg_count:-0} packages"
         pkg_managers_found=$((pkg_managers_found + 1))
     fi
     if command -v rpm >/dev/null 2>&1 && ! command -v pacman >/dev/null 2>&1; then
         rpm_count="$(rpm -qa 2>/dev/null | wc -l | tr -d ' ' || true)"
-        echo "- **rpm**: ${rpm_count:-0} packages" >> "$REPORT_FILE"
+        report_append "- **rpm**: ${rpm_count:-0} packages"
         pkg_managers_found=$((pkg_managers_found + 1))
     fi
     if command -v flatpak >/dev/null 2>&1; then
         flatpak_count="$(flatpak list 2>/dev/null | wc -l | tr -d ' ' || true)"
-        echo "- **flatpak**: ${flatpak_count:-0} packages" >> "$REPORT_FILE"
+        report_append "- **flatpak**: ${flatpak_count:-0} packages"
         pkg_managers_found=$((pkg_managers_found + 1))
     fi
     if command -v snap >/dev/null 2>&1; then
         snap_count="$(snap list 2>/dev/null | awk 'NR>1 {c++} END{print c+0}' || true)"
-        echo "- **snap**: ${snap_count:-0} packages" >> "$REPORT_FILE"
+        report_append "- **snap**: ${snap_count:-0} packages"
         pkg_managers_found=$((pkg_managers_found + 1))
     fi
     if command -v brew >/dev/null 2>&1; then
         brew_count="$(brew list --formula 2>/dev/null | wc -l | tr -d ' ' || true)"
         brew_cask_count="$(brew list --cask 2>/dev/null | wc -l | tr -d ' ' || true)"
-        echo "- **homebrew**: ${brew_count:-0} formulae, ${brew_cask_count:-0} casks" >> "$REPORT_FILE"
+        report_append "- **homebrew**: ${brew_count:-0} formulae, ${brew_cask_count:-0} casks"
         pkg_managers_found=$((pkg_managers_found + 1))
     fi
     if (( pkg_managers_found == 0 )); then
-        echo "_No supported package managers detected._" >> "$REPORT_FILE"
+        report_append "_No supported package managers detected._"
     fi
     append_ndjson_line "{\"type\":\"package_manager_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"managers_found\":${pkg_managers_found}}"
     section_end_ms=$(now_ms)
@@ -251,17 +252,17 @@ run_config_audit() {
 
     section_start_ms=$(now_ms)
     section_header "📄 Shell Profile Files"
-    echo "Existing shell profile files:" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
+    report_append "Existing shell profile files:"
+    report_append ""
     for rc in "$HOME_DIR/.zshrc" "$HOME_DIR/.zprofile" "$HOME_DIR/.zshenv" "$HOME_DIR/.bashrc" "$HOME_DIR/.bash_profile" "$HOME_DIR/.profile" "$HOME_DIR/.config/fish/config.fish"; do
         if [ -f "$rc" ]; then
             safe_rc="$(redact_path_for_ndjson "$rc")"
-            echo "- \`$safe_rc\`" >> "$REPORT_FILE"
+            report_append "- \`$safe_rc\`"
             profile_files_count=$((profile_files_count + 1))
         fi
     done
     if (( profile_files_count == 0 )); then
-        echo "_No common profile files found._" >> "$REPORT_FILE"
+        report_append "_No common profile files found._"
     fi
     section_end_ms=$(now_ms)
     emit_timing "shell_profile_files" "$section_start_ms" "$section_end_ms"

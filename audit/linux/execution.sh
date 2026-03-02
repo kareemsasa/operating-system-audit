@@ -17,6 +17,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -49,7 +50,7 @@ execution_write_report_header_if_needed() {
     if [[ "${EXECUTION_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # 🏃 Linux Execution & Processes Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -90,38 +91,38 @@ run_execution_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🔥 Top Processes by CPU"
-    echo "| PID | User | CPU% | MEM% | Command |" >> "$REPORT_FILE"
-    echo "|-----|------|------|------|---------|" >> "$REPORT_FILE"
+    report_append "| PID | User | CPU% | MEM% | Command |"
+    report_append "|-----|------|------|------|---------|"
     local cpu_items=""
     while IFS=$'\t' read -r pid user cpu mem command; do
         [ -n "$pid" ] || continue
-        echo "| $pid | \`$user\` | $cpu | $mem | \`$command\` |" >> "$REPORT_FILE"
+        report_append "| $pid | \`$user\` | $cpu | $mem | \`$command\` |"
         item="{\"pid\":${pid:-0},\"user\":$(json_escape "$user"),\"cpu_pct\":${cpu:-0},\"command\":$(json_escape "$command")}"
         if [ -z "$cpu_items" ]; then
             cpu_items="$item"
         else
             cpu_items="${cpu_items},${item}"
         fi
-    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | sort -t$'\t' -k3,3nr | sed -n '1,15p')
+    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | maybe_redact_all_text | sort -t$'\t' -k3,3nr | sed -n '1,15p')
     append_ndjson_line "{\"type\":\"top_processes_cpu\",\"run_id\":$(json_escape "$RUN_ID"),\"items\":[${cpu_items}]}"
     section_end_ms=$(now_ms)
     emit_timing "top_processes_cpu" "$section_start_ms" "$section_end_ms"
 
     section_start_ms=$(now_ms)
     section_header "🧠 Top Processes by Memory"
-    echo "| PID | User | MEM% | CPU% | Command |" >> "$REPORT_FILE"
-    echo "|-----|------|------|------|---------|" >> "$REPORT_FILE"
+    report_append "| PID | User | MEM% | CPU% | Command |"
+    report_append "|-----|------|------|------|---------|"
     local mem_items=""
     while IFS=$'\t' read -r pid user cpu mem command; do
         [ -n "$pid" ] || continue
-        echo "| $pid | \`$user\` | $mem | $cpu | \`$command\` |" >> "$REPORT_FILE"
+        report_append "| $pid | \`$user\` | $mem | $cpu | \`$command\` |"
         item="{\"pid\":${pid:-0},\"user\":$(json_escape "$user"),\"mem_pct\":${mem:-0},\"command\":$(json_escape "$command")}"
         if [ -z "$mem_items" ]; then
             mem_items="$item"
         else
             mem_items="${mem_items},${item}"
         fi
-    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | sort -t$'\t' -k4,4nr | sed -n '1,15p')
+    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | maybe_redact_all_text | sort -t$'\t' -k4,4nr | sed -n '1,15p')
     append_ndjson_line "{\"type\":\"top_processes_mem\",\"run_id\":$(json_escape "$RUN_ID"),\"items\":[${mem_items}]}"
     section_end_ms=$(now_ms)
     emit_timing "top_processes_mem" "$section_start_ms" "$section_end_ms"
@@ -136,7 +137,7 @@ run_execution_audit() {
     else
         cron_jobs_count=0
     fi
-    echo "- User cron jobs: **${cron_jobs_count:-0}**" >> "$REPORT_FILE"
+    report_append "- User cron jobs: **${cron_jobs_count:-0}**"
 
     # System cron dirs
     local sys_cron_count=0
@@ -145,33 +146,33 @@ run_execution_audit() {
             dir_count=$(find "$crondir" -type f ! -name '.placeholder' 2>/dev/null | wc -l | tr -d ' ' || true)
             dir_count=${dir_count:-0}
             if (( dir_count > 0 )); then
-                echo "- \`$crondir\`: **$dir_count** entries" >> "$REPORT_FILE"
+                report_append "- \`$crondir\`: **$dir_count** entries"
                 sys_cron_count=$((sys_cron_count + dir_count))
             fi
         fi
     done
     if [ -f /etc/crontab ]; then
         etc_cron_lines=$(awk 'NF && $1 !~ /^#/ && $1 !~ /^[A-Z]/' /etc/crontab 2>/dev/null | wc -l | tr -d ' ' || true)
-        echo "- \`/etc/crontab\` entries: **${etc_cron_lines:-0}**" >> "$REPORT_FILE"
+        report_append "- \`/etc/crontab\` entries: **${etc_cron_lines:-0}**"
     fi
 
-    echo "" >> "$REPORT_FILE"
+    report_append ""
 
     # Systemd user services
-    echo "User systemd services:" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
+    report_append "User systemd services:"
+    report_append ""
     if command -v systemctl >/dev/null 2>&1; then
         while IFS= read -r line; do
             [ -n "$line" ] || continue
             unit="$(echo "$line" | awk '{print $1}')"
             state="$(echo "$line" | awk '{print $2}')"
             [ -n "$unit" ] || continue
-            echo "- \`$unit\` — $state" >> "$REPORT_FILE"
+            report_append "- \`$unit\` — $state"
             user_services_count=$((user_services_count + 1))
         done < <(systemctl --user list-unit-files --type=service --no-pager --no-legend 2>/dev/null | awk '$2 == "enabled" || $2 == "static" {print}' | sed -n '1,20p')
     fi
     if (( user_services_count == 0 )); then
-        echo "- _No user services found._" >> "$REPORT_FILE"
+        report_append "- _No user services found._"
     fi
 
     append_ndjson_line "{\"type\":\"scheduled_tasks\",\"run_id\":$(json_escape "$RUN_ID"),\"cron_jobs\":${cron_jobs_count:-0},\"sys_cron_entries\":${sys_cron_count:-0},\"user_services\":${user_services_count:-0}}"
@@ -180,13 +181,13 @@ run_execution_audit() {
 
     section_start_ms=$(now_ms)
     section_header "⏲️ Systemd Timers"
-    echo "| Timer | Next Run | Unit |" >> "$REPORT_FILE"
-    echo "|-------|----------|------|" >> "$REPORT_FILE"
+    report_append "| Timer | Next Run | Unit |"
+    report_append "|-------|----------|------|"
     local timers_count=0
     if command -v systemctl >/dev/null 2>&1; then
         while IFS=$'\t' read -r next_run timer_unit activates; do
             [ -n "$timer_unit" ] || continue
-            echo "| \`$timer_unit\` | $next_run | \`$activates\` |" >> "$REPORT_FILE"
+            report_append "| \`$timer_unit\` | $next_run | \`$activates\` |"
             timers_count=$((timers_count + 1))
         done < <(systemctl list-timers --all --no-pager --no-legend 2>/dev/null | awk '{
             next_run = $1 " " $2 " " $3 " " $4 " " $5
@@ -198,7 +199,7 @@ run_execution_audit() {
         # Also user timers
         while IFS=$'\t' read -r next_run timer_unit activates; do
             [ -n "$timer_unit" ] || continue
-            echo "| \`$timer_unit\` (user) | $next_run | \`$activates\` |" >> "$REPORT_FILE"
+            report_append "| \`$timer_unit\` (user) | $next_run | \`$activates\` |"
             user_timers_count=$((user_timers_count + 1))
             timers_count=$((timers_count + 1))
         done < <(systemctl --user list-timers --all --no-pager --no-legend 2>/dev/null | awk '{
@@ -209,7 +210,7 @@ run_execution_audit() {
         }' | sed -n '1,20p')
     fi
     if (( timers_count == 0 )); then
-        echo "_No active timers found._" >> "$REPORT_FILE"
+        report_append "_No active timers found._"
     fi
     append_ndjson_line "{\"type\":\"systemd_timers\",\"run_id\":$(json_escape "$RUN_ID"),\"system_timers\":$((timers_count - user_timers_count)),\"user_timers\":${user_timers_count:-0}}"
     section_end_ms=$(now_ms)
@@ -223,8 +224,8 @@ run_execution_audit() {
         running_services="$(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | wc -l | tr -d ' ' || true)"
     fi
     running_services="${running_services:-0}"
-    echo "- Total running processes: **$total_processes**" >> "$REPORT_FILE"
-    echo "- Running systemd services: **$running_services**" >> "$REPORT_FILE"
+    report_append "- Total running processes: **$total_processes**"
+    report_append "- Running systemd services: **$running_services**"
     append_ndjson_line "{\"type\":\"execution_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"total_processes\":${total_processes:-0},\"running_services\":${running_services:-0},\"cron_jobs\":${cron_jobs_count:-0},\"user_services\":${user_services_count:-0}}"
     section_end_ms=$(now_ms)
     emit_timing "execution_summary" "$section_start_ms" "$section_end_ms"

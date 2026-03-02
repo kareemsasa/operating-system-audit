@@ -161,9 +161,42 @@ redact_command() {
     echo "${first} <args>"
 }
 
+# Append text to report file. When REDACT_ALL, text is redacted. Use for all report output.
+# Usage: report_append "line"
+#        report_append -e "\n## Section\n"   # interpret backslash escapes
+report_append() {
+    if [[ "${1:-}" == "-e" ]]; then
+        shift
+        printf '%b\n' "$*" | maybe_redact_all_text >> "$REPORT_FILE"
+    else
+        printf '%s\n' "$*" | maybe_redact_all_text >> "$REPORT_FILE"
+    fi
+}
+
+# Overwrite report file with stdin. When REDACT_ALL, content is redacted.
+# Usage: cat << EOF | report_write
+report_write() {
+    maybe_redact_all_text > "$REPORT_FILE"
+}
+
+# Pipeline helper: redact when REDACT_ALL, else pass through. Use in pipes: ... | maybe_redact_all_text | ...
+maybe_redact_all_text() {
+    if [[ "${REDACT_ALL:-false}" == "true" ]]; then
+        redact_all_text
+    else
+        cat
+    fi
+}
+
 # Apply all redaction layers when REDACT_ALL is true. Use for arbitrary text output.
+# When called with no args in a pipeline, reads from stdin.
 redact_all_text() {
-    local s="$1"
+    local s
+    if [[ $# -gt 0 ]]; then
+        s="$1"
+    else
+        s="$(cat)"
+    fi
     if ! _common_is_true "$REDACT_ALL"; then
         echo "$s"
         return
@@ -213,7 +246,7 @@ emit_timing() {
 
 section_header() {
     echo -e "\n${BOLD}${YELLOW}━━━ $1 ━━━${NC}"
-    echo -e "\n## $1\n" >> "$REPORT_FILE"
+    report_append -e "\n## $1\n"
 }
 
 count_lines() {

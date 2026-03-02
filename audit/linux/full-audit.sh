@@ -158,7 +158,7 @@ echo -e "${NC}"
 echo -e "Report will be saved to: ${GREEN}$REPORT_FILE${NC}"
 echo ""
 
-cat > "$REPORT_FILE" << EOF
+cat << EOF | report_write
 # 🔍 Linux Full System Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -174,11 +174,11 @@ cat > "$REPORT_FILE" << EOF
 - **PATH:** \`$(get_audit_path_for_output)\`
 EOF
 for note in "${METADATA_NOTES[@]+"${METADATA_NOTES[@]}"}"; do
-    echo "- **Note:** $note" >> "$REPORT_FILE"
+    report_append "- **Note:** $note"
 done
-echo "" >> "$REPORT_FILE"
-echo "---" >> "$REPORT_FILE"
-echo "" >> "$REPORT_FILE"
+report_append ""
+report_append "---"
+report_append ""
 STORAGE_HEADER_READY=true
 
 if [ -n "$NDJSON_FILE" ]; then
@@ -244,7 +244,7 @@ fi
 rm -f "$SOFT_FAILURE_LOG" "$TOP_NODE_MODULES_FILE" "$TOP_DOCUMENTS_FOLDERS_FILE" "$TOP_PATHS_FILE" || true
 if (( soft_failures > 0 )); then
     echo -e "Soft probe warnings encountered: ${YELLOW}$soft_failures${NC}"
-    echo "- **Soft probe warnings:** $soft_failures" >> "$REPORT_FILE"
+    report_append "- **Soft probe warnings:** $soft_failures"
     if [ -n "$NDJSON_FILE" ]; then
         append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"soft_failures\":${soft_failures:-0}}"
     fi

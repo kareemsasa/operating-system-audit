@@ -24,6 +24,7 @@ Options:
   --heatmap-render-topn N Render count passed to HTML renderer (default: 50)
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -128,6 +129,10 @@ storage_parse_args() {
                 REDACT_PATHS_MODE="off"
                 shift
                 ;;
+            --redact-all)
+                REDACT_ALL=true
+                shift
+                ;;
             --no-color)
                 NO_COLOR=true
                 shift
@@ -228,7 +233,7 @@ storage_write_report_header_if_needed() {
     if [[ "${STORAGE_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # 🧹 Linux Home Directory Cleanup Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -243,11 +248,11 @@ storage_write_report_header_if_needed() {
 - **Kernel:** \`$KERNEL_INFO\`
 EOF
     for note in "${METADATA_NOTES[@]+"${METADATA_NOTES[@]}"}"; do
-        echo "- **Note:** $note" >> "$REPORT_FILE"
+        report_append "- **Note:** $note"
     done
-    echo "" >> "$REPORT_FILE"
-    echo "---" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
+    report_append ""
+    report_append "---"
+    report_append ""
     STORAGE_HEADER_READY=true
 }
 
@@ -290,12 +295,12 @@ storage_render_heatmaps_if_requested() {
         candidate_treemap="$REPORT_DIR/heatmap-treemap-${run_id_safe}.html"
         candidate_timing="$REPORT_DIR/heatmap-timing-${run_id_safe}.html"
         if [ -f "$candidate_treemap" ] && [ -f "$candidate_timing" ]; then
-            echo "" >> "$REPORT_FILE"
-            echo "---" >> "$REPORT_FILE"
-            echo "" >> "$REPORT_FILE"
-            echo "## 🗺️ Visualizations" >> "$REPORT_FILE"
-            echo "- Treemap heatmap: \`$candidate_treemap\`" >> "$REPORT_FILE"
-            echo "- Timing heatmap: \`$candidate_timing\`" >> "$REPORT_FILE"
+            report_append ""
+            report_append "---"
+            report_append ""
+            report_append "## 🗺️ Visualizations"
+            report_append "- Treemap heatmap: \`$candidate_treemap\`"
+            report_append "- Timing heatmap: \`$candidate_timing\`"
         fi
     else
         append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"code\":\"heatmap_render_failed\"}"

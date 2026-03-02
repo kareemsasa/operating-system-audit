@@ -101,6 +101,10 @@ audit_parse_args() {
                 REDACT_PATHS_MODE="off"
                 shift
                 ;;
+            --redact-all)
+                REDACT_ALL=true
+                shift
+                ;;
             --no-color)
                 NO_COLOR=true
                 shift

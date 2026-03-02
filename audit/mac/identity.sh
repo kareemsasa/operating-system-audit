@@ -17,6 +17,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -49,7 +50,7 @@ identity_write_report_header_if_needed() {
     if [[ "${IDENTITY_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # 👤 Mac Identity & Access Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -89,8 +90,8 @@ run_identity_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🧑 Local User Accounts"
-    echo "| Username | UID | Admin |" >> "$REPORT_FILE"
-    echo "|----------|-----|-------|" >> "$REPORT_FILE"
+    report_append "| Username | UID | Admin |"
+    report_append "|----------|-----|-------|"
     local local_users_items=""
     while IFS= read -r username; do
         [ -n "$username" ] || continue
@@ -103,7 +104,7 @@ run_identity_audit() {
         if soft_probe_check "identity.dseditgroup_checkmember" dseditgroup -o checkmember -m "$username" admin 2>/dev/null; then
             admin=true
         fi
-        echo "| \`$username\` | $uid | $admin |" >> "$REPORT_FILE"
+        report_append "| \`$username\` | $uid | $admin |"
         item="{\"username\":$(json_escape "$username"),\"uid\":${uid:-0},\"admin\":$admin}"
         if [ -z "$local_users_items" ]; then
             local_users_items="$item"
@@ -124,9 +125,9 @@ run_identity_audit() {
     if echo "$groups_line" | awk '{for(i=1;i<=NF;i++) if($i=="admin" || $i=="wheel") found=1} END{exit found ? 0 : 1}'; then
         sudo_capable=true
     fi
-    echo "- Current user: \`$CURRENT_USER\`" >> "$REPORT_FILE"
-    echo "- Groups: \`$groups_line\`" >> "$REPORT_FILE"
-    echo "- Sudo-capable (admin/wheel): **$sudo_capable**" >> "$REPORT_FILE"
+    report_append "- Current user: \`$CURRENT_USER\`"
+    report_append "- Groups: \`$groups_line\`"
+    report_append "- Sudo-capable (admin/wheel): **$sudo_capable**"
     section_end_ms=$(now_ms)
     emit_timing "current_groups" "$section_start_ms" "$section_end_ms"
 
@@ -134,8 +135,8 @@ run_identity_audit() {
     section_header "🔐 SSH Keys & SSH Configuration"
     local ssh_dir="$HOME_DIR/.ssh"
     local ssh_key_items=""
-    echo "| Public Key File | Type | Fingerprint |" >> "$REPORT_FILE"
-    echo "|-----------------|------|-------------|" >> "$REPORT_FILE"
+    report_append "| Public Key File | Type | Fingerprint |"
+    report_append "|-----------------|------|-------------|"
     if [ -d "$ssh_dir" ]; then
         while IFS= read -r pubfile; do
             [ -n "$pubfile" ] || continue
@@ -146,9 +147,12 @@ run_identity_audit() {
                 ecdsa-*) key_type="$key_type" ;;
             esac
             fingerprint="$(ssh-keygen -lf "$pubfile" 2>/dev/null | awk '{print $2; exit}' || true)"
+            if [[ "${REDACT_ALL:-false}" == "true" && -n "$fingerprint" ]]; then
+                fingerprint="<fingerprint>"
+            fi
             fingerprint="${fingerprint:-unknown}"
             safe_file="$(redact_path_for_ndjson "$pubfile")"
-            echo "| \`$safe_file\` | $key_type | \`$fingerprint\` |" >> "$REPORT_FILE"
+            report_append "| \`$safe_file\` | $key_type | \`$fingerprint\` |"
             item="{\"file\":$(json_escape "$safe_file"),\"type\":$(json_escape "$key_type"),\"fingerprint\":$(json_escape "$fingerprint")}"
             if [ -z "$ssh_key_items" ]; then
                 ssh_key_items="$item"
@@ -159,7 +163,7 @@ run_identity_audit() {
         done < <(ls "$ssh_dir"/*.pub 2>/dev/null || true)
     fi
     if (( ssh_keys_count == 0 )); then
-        echo "_No public SSH keys found._" >> "$REPORT_FILE"
+        report_append "_No public SSH keys found._"
     fi
     append_ndjson_line "{\"type\":\"ssh_keys\",\"run_id\":$(json_escape "$RUN_ID"),\"count\":${ssh_keys_count:-0},\"items\":[${ssh_key_items}]}"
 
@@ -171,8 +175,8 @@ run_identity_audit() {
     if [ -f "$ssh_dir/config" ]; then
         ssh_hosts_count=$(awk 'tolower($1)=="host" && $2 !~ /^\*/ {c++} END{print c+0}' "$ssh_dir/config" 2>/dev/null || true)
     fi
-    echo "- \`authorized_keys\` entries: **${auth_keys_count:-0}**" >> "$REPORT_FILE"
-    echo "- \`~/.ssh/config\` host entries: **${ssh_hosts_count:-0}**" >> "$REPORT_FILE"
+    report_append "- \`authorized_keys\` entries: **${auth_keys_count:-0}**"
+    report_append "- \`~/.ssh/config\` host entries: **${ssh_hosts_count:-0}**"
     section_end_ms=$(now_ms)
     emit_timing "ssh_inventory" "$section_start_ms" "$section_end_ms"
 
@@ -183,8 +187,8 @@ run_identity_audit() {
     if [ -f "/etc/shells" ] && awk -v s="$shell_path" '$0==s {found=1} END{exit found ? 0 : 1}' /etc/shells 2>/dev/null; then
         shell_valid=true
     fi
-    echo "- Current shell: \`$shell_path\`" >> "$REPORT_FILE"
-    echo "- Present in \`/etc/shells\`: **$shell_valid**" >> "$REPORT_FILE"
+    report_append "- Current shell: \`$shell_path\`"
+    report_append "- Present in \`/etc/shells\`: **$shell_valid**"
     section_end_ms=$(now_ms)
     emit_timing "login_shell" "$section_start_ms" "$section_end_ms"
 
