@@ -1,8 +1,10 @@
 package diff
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"sort"
@@ -19,11 +21,28 @@ const (
 // Run runs the full diff between baseline and current rows. When ndjson is false,
 // prints human-readable Markdown. When ndjson is true, emits one JSON line per
 // delta to stdout. Returns true if any changes were detected.
-func Run(baselineRows, currentRows []Row, ndjson bool) bool {
+// When quiet is true, captures output to a buffer instead of stdout; the caller
+// should print the returned output when hasDeltas is true (for forensic breadcrumbs).
+func Run(baselineRows, currentRows []Row, ndjson bool, quiet bool) (hasDeltas bool, capturedOutput []byte) {
+	var buf bytes.Buffer
+	if quiet {
+		r, w, _ := os.Pipe()
+		old := os.Stdout
+		os.Stdout = w
+		go func() {
+			io.Copy(&buf, r)
+			r.Close()
+		}()
+		defer func() {
+			w.Close()
+			os.Stdout = old
+			capturedOutput = buf.Bytes()
+		}()
+	}
 	baseByType := GroupByType(baselineRows)
 	currByType := GroupByType(currentRows)
 
-	hasDeltas := false
+	hasDeltas = false
 	hasDeltas = emitStorageDelta(baseByType["summary"], currByType["summary"], ndjson) || hasDeltas
 	hasDeltas = emitCountDelta(baseByType["counts"], currByType["counts"], ndjson) || hasDeltas
 	hasDeltas = emitSecurityConfigDelta(baseByType["security_config"], currByType["security_config"], ndjson) || hasDeltas
@@ -41,10 +60,10 @@ func Run(baselineRows, currentRows []Row, ndjson bool) bool {
 
 	hasDeltas = emitProbeFailuresDelta(baseByType["probe_failures_summary"], currByType["probe_failures_summary"], ndjson) || hasDeltas
 
-	if !hasDeltas && !ndjson {
+	if !hasDeltas && !ndjson && !quiet {
 		fmt.Println("No changes detected between baseline and current.")
 	}
-	return hasDeltas
+	return
 }
 
 func emitDiffRow(diffType string, fields map[string]any) {

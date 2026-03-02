@@ -20,9 +20,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/kareemsasa/operating-system-audit"
+	embedded "github.com/kareemsasa/operating-system-audit"
 	"github.com/kareemsasa/operating-system-audit/internal/diff"
+	"github.com/kareemsasa/operating-system-audit/internal/latest"
 )
 
 type manifest struct {
@@ -93,6 +95,10 @@ func run(args []string) int {
 		return 0
 	case "run":
 		return runSubcommand(commands, repoRoot, args[1:])
+	case "run-scheduled":
+		return runRunScheduled(commands, repoRoot, args[1:])
+	case "schedule":
+		return runSchedule(repoRoot, args[1:])
 	case "diff":
 		return runDiff(args[1:])
 	default:
@@ -351,7 +357,7 @@ func runMenu(commands []auditCommand, detectedOS, repoRoot string) {
 
 		selected := commands[choice-1]
 		fmt.Printf("\nRunning: %s\n\n", selected.Display)
-		if code, err := runAuditCommand(repoRoot, selected, nil, false); err != nil {
+		if code, err := runAuditCommand(repoRoot, selected, nil, false, nil); err != nil {
 			fmt.Printf("Command failed (exit %d): %v\n", code, err)
 		}
 
@@ -404,7 +410,7 @@ func promptRunAgain(reader *bufio.Reader) (bool, bool) {
 	return answer == "y" || answer == "yes", true
 }
 
-func runAuditCommand(repoRoot string, command auditCommand, passthrough []string, printRunMeta bool) (int, error) {
+func runAuditCommand(repoRoot string, command auditCommand, passthrough []string, printRunMeta bool, captureMeta *latest.RunMeta) (int, error) {
 	targetPath, err := resolveCommandPath(repoRoot, command.Exec[0])
 	if err != nil {
 		return 1, err
@@ -448,7 +454,13 @@ func runAuditCommand(repoRoot string, command auditCommand, passthrough []string
 		if err != nil {
 			return 1, fmt.Errorf("read run meta: %w", err)
 		}
-		fmt.Println(string(data))
+		if captureMeta != nil {
+			if err := json.Unmarshal(data, captureMeta); err != nil {
+				return 1, fmt.Errorf("parse run meta: %w", err)
+			}
+		} else {
+			fmt.Println(string(data))
+		}
 	}
 	return 0, nil
 }
@@ -483,7 +495,7 @@ func runSubcommand(commands []auditCommand, repoRoot string, args []string) int 
 		return 2
 	}
 
-	code, runErr := runAuditCommand(repoRoot, command, passthrough, printRunMeta)
+	code, runErr := runAuditCommand(repoRoot, command, passthrough, printRunMeta, nil)
 	if runErr != nil {
 		return code
 	}
@@ -524,6 +536,325 @@ func printCommandList(commands []auditCommand) {
 	}
 }
 
+func runRunScheduled(commands []auditCommand, repoRoot string, args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "run-scheduled requires audit id")
+		printUsage()
+		return 2
+	}
+	auditID := args[0]
+	passthrough := []string{"--ndjson"}
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--" {
+			passthrough = append(passthrough, args[i+1:]...)
+			break
+		}
+	}
+
+	command, err := findCommandByID(commands, auditID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	var meta latest.RunMeta
+	code, runErr := runAuditCommand(repoRoot, command, passthrough, true, &meta)
+	if runErr != nil {
+		return code
+	}
+	if meta.NDJSON == "" {
+		fmt.Fprintln(os.Stderr, "run-scheduled: audit did not produce NDJSON output")
+		return 1
+	}
+
+	auditRoot := filepath.Dir(meta.Dir)
+	baselinePath := filepath.Join(repoRoot, auditRoot, ".latest.json")
+	var hasDeltas bool
+	var capturedOutput []byte
+	baselineData, err := os.ReadFile(baselinePath)
+	hadBaseline := err == nil
+	if hadBaseline {
+		var baseline latest.RunMeta
+		if err := json.Unmarshal(baselineData, &baseline); err != nil {
+			fmt.Fprintf(os.Stderr, "run-scheduled: invalid baseline: %v\n", err)
+			return 1
+		}
+		baselineNDJSON := filepath.Join(repoRoot, baseline.NDJSON)
+		currentNDJSON := filepath.Join(repoRoot, meta.NDJSON)
+		baselineRows, err := diff.ReadNDJSON(baselineNDJSON)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "run-scheduled: read baseline NDJSON: %v\n", err)
+			return 1
+		}
+		currentRows, err := diff.ReadNDJSON(currentNDJSON)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "run-scheduled: read current NDJSON: %v\n", err)
+			return 1
+		}
+		hasDeltas, capturedOutput = diff.Run(baselineRows, currentRows, false, true)
+	}
+
+	if err := latest.WriteLatestManifest(repoRoot, auditID, meta); err != nil {
+		fmt.Fprintf(os.Stderr, "run-scheduled: write latest manifest: %v\n", err)
+		return 1
+	}
+	if !hadBaseline {
+		fmt.Fprintf(os.Stderr, "run-scheduled: no baseline found; wrote .latest.json\n")
+	}
+
+	if hasDeltas {
+		if len(capturedOutput) > 0 {
+			os.Stdout.Write(capturedOutput)
+		}
+		notifyOnChange(repoRoot, auditRoot, auditID)
+		return 2
+	}
+	return 0
+}
+
+func notifyOnChange(repoRoot, auditRoot, auditID string) {
+	title := "OS Audit: changes detected"
+	body := fmt.Sprintf("Audit %s found changes since last run.", auditID)
+	detectedOS, _ := detectOS()
+
+	var notified bool
+	switch detectedOS {
+	case "mac":
+		cmd := exec.Command("osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", title, body)
+		if err := cmd.Run(); err == nil {
+			notified = true
+		}
+	case "linux":
+		cmd := exec.Command("notify-send", title, body)
+		if err := cmd.Run(); err == nil {
+			notified = true
+		}
+	}
+
+	if !notified {
+		alertsDir := filepath.Join(repoRoot, auditRoot, "alerts")
+		_ = os.MkdirAll(alertsDir, 0o755)
+		logName := fmt.Sprintf("%s.txt", strings.ReplaceAll(time.Now().Format(time.RFC3339), ":", "-"))
+		logPath := filepath.Join(alertsDir, logName)
+		if err := os.WriteFile(logPath, []byte(fmt.Sprintf("%s\n%s\n", title, body)), 0o644); err == nil {
+			fmt.Fprintf(os.Stderr, "run-scheduled: desktop notification unavailable; wrote alerts/%s\n", logName)
+		} else {
+			fmt.Fprintf(os.Stderr, "run-scheduled: desktop notification unavailable; could not write alerts/%s: %v\n", logName, err)
+		}
+	}
+}
+
+func runSchedule(repoRoot string, args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "schedule requires subcommand: install, uninstall, status")
+		printUsage()
+		return 2
+	}
+	sub := args[0]
+	rest := args[1:]
+	if len(rest) < 1 {
+		fmt.Fprintf(os.Stderr, "schedule %s requires audit id\n", sub)
+		printUsage()
+		return 2
+	}
+	auditID := rest[0]
+
+	detectedOS, err := detectOS()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	switch sub {
+	case "install":
+		return scheduleInstall(repoRoot, auditID, detectedOS)
+	case "uninstall":
+		return scheduleUninstall(auditID, detectedOS)
+	case "status":
+		return scheduleStatus(auditID, detectedOS)
+	default:
+		fmt.Fprintf(os.Stderr, "schedule: unknown subcommand %q\n", sub)
+		printUsage()
+		return 2
+	}
+}
+
+func scheduleInstall(repoRoot, auditID, detectedOS string) int {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "schedule install: %v\n", err)
+		return 1
+	}
+	exe, _ = filepath.EvalSymlinks(exe)
+	exe, _ = filepath.Abs(exe)
+
+	args := []string{"run-scheduled", auditID, "--", "--redact-all"}
+
+	if detectedOS == "linux" {
+		configDir := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "schedule install: %v\n", err)
+			return 1
+		}
+		unitName := "osaudit-" + auditID
+		servicePath := filepath.Join(configDir, unitName+".service")
+		timerPath := filepath.Join(configDir, unitName+".timer")
+
+		serviceContent := fmt.Sprintf(`[Unit]
+Description=OS Audit scheduled run (%s)
+
+[Service]
+Type=oneshot
+SuccessExitStatus=2
+WorkingDirectory=%s
+Environment=OSAUDIT_ROOT=%s
+ExecStart=%s %s
+`, auditID, repoRoot, repoRoot, exe, strings.Join(args, " "))
+
+		timerContent := fmt.Sprintf(`[Unit]
+Description=OS Audit scheduled run (%s)
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`, auditID)
+
+		if err := os.WriteFile(servicePath, []byte(serviceContent), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "schedule install: %v\n", err)
+			return 1
+		}
+		if err := os.WriteFile(timerPath, []byte(timerContent), 0o644); err != nil {
+			os.Remove(servicePath)
+			fmt.Fprintf(os.Stderr, "schedule install: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Installed. Reload and enable with:\n  systemctl --user daemon-reload\n  systemctl --user enable --now %s.timer\n", unitName)
+		return 0
+	}
+
+	if detectedOS == "mac" {
+		agentsDir := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "schedule install: %v\n", err)
+			return 1
+		}
+		label := "com.osaudit." + auditID
+		plistPath := filepath.Join(agentsDir, label+".plist")
+
+		plistContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>%s</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+		<string>run-scheduled</string>
+		<string>%s</string>
+		<string>--</string>
+		<string>--redact-all</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>%s</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>OSAUDIT_ROOT</key>
+		<string>%s</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>8</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/dev/null</string>
+	<key>StandardErrorPath</key>
+	<string>/dev/null</string>
+</dict>
+</plist>
+`, label, exe, auditID, repoRoot, repoRoot)
+
+		if err := os.WriteFile(plistPath, []byte(plistContent), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "schedule install: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Installed. Load with: launchctl load %s\n", plistPath)
+		return 0
+	}
+
+	fmt.Fprintln(os.Stderr, "schedule install: unsupported OS")
+	return 1
+}
+
+func scheduleUninstall(auditID, detectedOS string) int {
+	if detectedOS == "linux" {
+		configDir := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
+		unitName := "osaudit-" + auditID
+		servicePath := filepath.Join(configDir, unitName+".service")
+		timerPath := filepath.Join(configDir, unitName+".timer")
+
+		// Stop and disable first
+		exec.Command("systemctl", "--user", "stop", unitName+".timer").Run()
+		exec.Command("systemctl", "--user", "disable", unitName+".timer").Run()
+
+		os.Remove(timerPath)
+		os.Remove(servicePath)
+		fmt.Printf("Uninstalled %s\n", unitName)
+		return 0
+	}
+
+	if detectedOS == "mac" {
+		label := "com.osaudit." + auditID
+		plistPath := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", label+".plist")
+
+		exec.Command("launchctl", "unload", plistPath).Run()
+		os.Remove(plistPath)
+		fmt.Printf("Uninstalled %s\n", label)
+		return 0
+	}
+
+	fmt.Fprintln(os.Stderr, "schedule uninstall: unsupported OS")
+	return 1
+}
+
+func scheduleStatus(auditID, detectedOS string) int {
+	if detectedOS == "linux" {
+		unitName := "osaudit-" + auditID
+		timerPath := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user", unitName+".timer")
+		if _, err := os.Stat(timerPath); err != nil {
+			fmt.Printf("%s: not installed\n", auditID)
+			return 0
+		}
+		fmt.Printf("%s: installed\n", auditID)
+		cmd := exec.Command("systemctl", "--user", "list-timers", unitName+".timer", "--no-pager")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		_ = cmd.Run()
+		return 0
+	}
+
+	if detectedOS == "mac" {
+		label := "com.osaudit." + auditID
+		plistPath := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", label+".plist")
+		if _, err := os.Stat(plistPath); err != nil {
+			fmt.Printf("%s: not installed\n", auditID)
+			return 0
+		}
+		fmt.Printf("%s: installed (%s)\n", auditID, plistPath)
+		fmt.Println("Next run: daily at 8:00 AM (launchd does not expose next run time)")
+		return 0
+	}
+
+	fmt.Fprintln(os.Stderr, "schedule status: unsupported OS")
+	return 1
+}
+
 func runDiff(args []string) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	baseline := fs.String("baseline", "", "Path to baseline NDJSON file")
@@ -554,7 +885,7 @@ func runDiff(args []string) int {
 		return 1
 	}
 
-	hasDeltas := diff.Run(baselineRows, currentRows, *ndjson)
+	hasDeltas, _ := diff.Run(baselineRows, currentRows, *ndjson, false)
 	if hasDeltas {
 		return 2
 	}
@@ -566,6 +897,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  osaudit")
 	fmt.Fprintln(os.Stderr, "  osaudit list")
 	fmt.Fprintln(os.Stderr, "  osaudit run <id> [--print-run-meta] -- [args...]")
+	fmt.Fprintln(os.Stderr, "  osaudit run-scheduled <audit_id> [--] [args...]")
+	fmt.Fprintln(os.Stderr, "  osaudit schedule install|uninstall|status <audit_id>")
 	fmt.Fprintln(os.Stderr, "  osaudit diff --baseline <path> --current <path> [--ndjson]")
 }
 

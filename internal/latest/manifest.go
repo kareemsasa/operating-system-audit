@@ -18,12 +18,15 @@ type RunMeta struct {
 }
 
 // WriteLatestManifest writes a "latest" manifest for the given audit ID.
-// The manifest is written atomically (tmp write + rename) to meta.Dir/.latest.json.
-func WriteLatestManifest(auditID string, meta RunMeta) error {
+// The manifest is written atomically (tmp write + rename) to the audit root,
+// e.g. output/<audit-id>/.latest.json, not inside the timestamped run dir.
+// repoRoot is the repository root; meta.Dir is repo-relative (e.g. output/execution-audit/20260302-100907).
+func WriteLatestManifest(repoRoot, auditID string, meta RunMeta) error {
 	if auditID == "" || meta.Dir == "" {
 		return nil
 	}
-	manifestPath := filepath.Join(meta.Dir, ".latest.json")
+	auditRoot := filepath.Dir(meta.Dir)
+	manifestPath := filepath.Join(repoRoot, auditRoot, ".latest.json")
 	dir := filepath.Dir(manifestPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
