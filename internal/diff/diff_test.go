@@ -30,7 +30,7 @@ func TestRun_WithFixtures_HasDeltasAndExpectedFormatting(t *testing.T) {
 	}
 	os.Stdout = w
 
-	hasDeltas := Run(baselineRows, currentRows, false)
+	hasDeltas, _ := Run(baselineRows, currentRows, false, false)
 
 	w.Close()
 	os.Stdout = oldStdout
@@ -118,7 +118,7 @@ func TestRun_NoOpChange_NotEmitted(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	hasDeltas := Run(baselineRows, currentRows, false)
+	hasDeltas, _ := Run(baselineRows, currentRows, false, false)
 
 	w.Close()
 	os.Stdout = oldStdout
@@ -154,7 +154,7 @@ func TestRun_NDJSON(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	hasDeltas := Run(baselineRows, currentRows, true)
+	hasDeltas, _ := Run(baselineRows, currentRows, true, false)
 
 	w.Close()
 	os.Stdout = oldStdout
