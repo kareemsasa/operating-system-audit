@@ -313,6 +313,8 @@ storage_main() {
     storage_validate_and_resolve_paths
     storage_build_scan_roots
     storage_prepare_files_and_common
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
+    audit_set_run_meta_trap "storage"
     storage_write_report_header_if_needed
     storage_init_ndjson_if_needed
     run_storage_audit

@@ -189,6 +189,8 @@ execution_main() {
     execution_parse_args "$@"
     execution_validate_and_resolve_paths
     execution_prepare_files_and_common
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
+    audit_set_run_meta_trap "execution"
     execution_write_report_header_if_needed
     execution_init_ndjson_if_needed
     run_execution_audit

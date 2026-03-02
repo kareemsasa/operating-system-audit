@@ -351,7 +351,7 @@ func runMenu(commands []auditCommand, detectedOS, repoRoot string) {
 
 		selected := commands[choice-1]
 		fmt.Printf("\nRunning: %s\n\n", selected.Display)
-		if code, err := runAuditCommand(repoRoot, selected, nil); err != nil {
+		if code, err := runAuditCommand(repoRoot, selected, nil, false); err != nil {
 			fmt.Printf("Command failed (exit %d): %v\n", code, err)
 		}
 
@@ -404,7 +404,7 @@ func promptRunAgain(reader *bufio.Reader) (bool, bool) {
 	return answer == "y" || answer == "yes", true
 }
 
-func runAuditCommand(repoRoot string, command auditCommand, passthrough []string) (int, error) {
+func runAuditCommand(repoRoot string, command auditCommand, passthrough []string, printRunMeta bool) (int, error) {
 	targetPath, err := resolveCommandPath(repoRoot, command.Exec[0])
 	if err != nil {
 		return 1, err
@@ -413,18 +413,44 @@ func runAuditCommand(repoRoot string, command auditCommand, passthrough []string
 	args := append([]string{}, command.Exec[1:]...)
 	args = append(args, passthrough...)
 
+	var runMetaPath string
+	if printRunMeta {
+		tmpDir := filepath.Join(repoRoot, ".tmp")
+		_ = os.MkdirAll(tmpDir, 0o755)
+		f, err := os.CreateTemp(tmpDir, "osaudit-run-meta-*.json")
+		if err != nil {
+			return 1, fmt.Errorf("create temp file for run meta: %w", err)
+		}
+		runMetaPath = f.Name()
+		f.Close()
+		args = append(args, "--run-meta-out", runMetaPath)
+		defer os.Remove(runMetaPath)
+	}
+
 	cmd := exec.Command(targetPath, args...)
-	cmd.Stdout = os.Stdout
+	if printRunMeta {
+		cmd.Stdout = os.Stderr // human output to stderr so stdout stays clean for JSON
+	} else {
+		cmd.Stdout = os.Stdout
+	}
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "OSAUDIT_ROOT="+repoRoot)
 
 	err = cmd.Run()
-	if err == nil {
-		return 0, nil
+	if err != nil {
+		return exitCodeFromError(err), err
 	}
-	return exitCodeFromError(err), err
+
+	if printRunMeta && runMetaPath != "" {
+		data, err := os.ReadFile(runMetaPath)
+		if err != nil {
+			return 1, fmt.Errorf("read run meta: %w", err)
+		}
+		fmt.Println(string(data))
+	}
+	return 0, nil
 }
 
 func resolveCommandPath(repoRoot, manifestPath string) (string, error) {
@@ -444,7 +470,7 @@ func resolveCommandPath(repoRoot, manifestPath string) (string, error) {
 }
 
 func runSubcommand(commands []auditCommand, repoRoot string, args []string) int {
-	id, passthrough, err := parseRunArgs(args)
+	id, passthrough, printRunMeta, err := parseRunArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		printUsage()
@@ -457,26 +483,30 @@ func runSubcommand(commands []auditCommand, repoRoot string, args []string) int 
 		return 2
 	}
 
-	code, runErr := runAuditCommand(repoRoot, command, passthrough)
+	code, runErr := runAuditCommand(repoRoot, command, passthrough, printRunMeta)
 	if runErr != nil {
 		return code
 	}
 	return 0
 }
 
-func parseRunArgs(args []string) (string, []string, error) {
+func parseRunArgs(args []string) (id string, passthrough []string, printRunMeta bool, err error) {
 	if len(args) == 0 {
-		return "", nil, errors.New("missing command id for 'run'")
+		return "", nil, false, errors.New("missing command id for 'run'")
 	}
-	id := args[0]
-
-	if len(args) == 1 {
-		return id, nil, nil
+	id = args[0]
+	i := 1
+	for i < len(args) && args[i] == "--print-run-meta" {
+		printRunMeta = true
+		i++
 	}
-	if args[1] != "--" {
-		return "", nil, errors.New("pass-through arguments must be after '--'")
+	if i >= len(args) {
+		return id, nil, printRunMeta, nil
 	}
-	return id, args[2:], nil
+	if args[i] != "--" {
+		return "", nil, false, errors.New("pass-through arguments must be after '--'")
+	}
+	return id, args[i+1:], printRunMeta, nil
 }
 
 func findCommandByID(commands []auditCommand, id string) (auditCommand, error) {
@@ -535,7 +565,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  osaudit")
 	fmt.Fprintln(os.Stderr, "  osaudit list")
-	fmt.Fprintln(os.Stderr, "  osaudit run <id> -- [args...]")
+	fmt.Fprintln(os.Stderr, "  osaudit run <id> [--print-run-meta] -- [args...]")
 	fmt.Fprintln(os.Stderr, "  osaudit diff --baseline <path> --current <path> [--ndjson]")
 }
 
