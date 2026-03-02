@@ -214,6 +214,8 @@ network_main() {
     network_parse_args "$@"
     network_validate_and_resolve_paths
     network_prepare_files_and_common
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
+    audit_set_run_meta_trap "network"
     network_write_report_header_if_needed
     network_init_ndjson_if_needed
     run_network_audit

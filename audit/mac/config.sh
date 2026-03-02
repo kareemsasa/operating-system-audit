@@ -185,6 +185,8 @@ config_main() {
     config_parse_args "$@"
     config_validate_and_resolve_paths
     config_prepare_files_and_common
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
+    audit_set_run_meta_trap "config"
     config_write_report_header_if_needed
     config_init_ndjson_if_needed
     run_config_audit

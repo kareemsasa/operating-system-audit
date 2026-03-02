@@ -105,6 +105,14 @@ while (($# > 0)); do
             NO_COLOR=true
             shift
             ;;
+        --run-meta-out)
+            if (($# < 2)); then
+                echo "Error: --run-meta-out requires a path" >&2
+                exit 1
+            fi
+            RUN_META_OUT="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -127,6 +135,8 @@ if [[ ! "$OLD_FILE_DAYS" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
+source "$(dirname "$0")/lib/init.sh"
+
 _ndjson_requested=$WRITE_NDJSON
 audit_resolve_output_paths "full-audit"
 # One shared probe-failure log across subshells (command substitutions)
@@ -148,6 +158,7 @@ TOP_PATHS_FILE="${TOP_PATHS_FILE:-$REPORT_DIR/.full-audit-top-paths-$TIMESTAMP_F
 : > "$PROBE_FAILURES_FILE"
 
 source "$(dirname "$0")/lib/common.sh"
+audit_set_run_meta_trap "full"
 
 echo -e "${BOLD}${CYAN}"
 echo "╔══════════════════════════════════════════════════╗"

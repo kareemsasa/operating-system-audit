@@ -109,6 +109,15 @@ audit_parse_args() {
                 NO_COLOR=true
                 shift
                 ;;
+            --run-meta-out)
+                if (($# < 2)); then
+                    _err "--run-meta-out requires a path"
+                    "$_usage_func"
+                    exit 1
+                fi
+                RUN_META_OUT="$2"
+                shift 2
+                ;;
             -h|--help)
                 "$_usage_func"
                 exit 0
@@ -145,6 +154,8 @@ audit_resolve_output_paths() {
         REPORT_FILE="$OUTPUT_FILE"
         REPORT_DIR=$(dirname "$REPORT_FILE")
     else
+        # Use timestamped run directory: output/<audit-id>-audit/<timestamp>/
+        REPORT_DIR="${REPORT_DIR:-$DEFAULT_REPORT_DIR}/$TIMESTAMP_FOR_FILENAME"
         REPORT_FILE="${REPORT_FILE:-$REPORT_DIR/${report_suffix}-$TIMESTAMP_FOR_FILENAME.md}"
     fi
 
@@ -164,6 +175,64 @@ audit_resolve_output_paths() {
         REDACT_PATHS=false
         NDJSON_FILE=""
     fi
+}
+
+# Sets EXIT trap to write run meta only on success. Chains with existing EXIT trap (e.g. _common_cleanup_tmps).
+# audit_write_run_meta must already be defined (init.sh already sourced).
+# Usage: audit_set_run_meta_trap <audit_id>
+audit_set_run_meta_trap() {
+    local id="$1"
+    local prev_trap prev_cmd
+    prev_trap=$(trap -p EXIT 2>/dev/null) || true
+    if [[ -n "$prev_trap" ]]; then
+        prev_cmd=$(echo "$prev_trap" | sed -n "s/^trap -- '\(.*\)' EXIT\$/\1/p" | sed "s/\\\\'/'/g") || true
+    fi
+    # Run our meta write first (if success), then chain to prev trap (e.g. cleanup). No explicit exit.
+    trap "ec=\$?; if [[ \$ec -eq 0 && -n \"\${RUN_META_OUT:-}\" ]]; then audit_write_run_meta \"$id\"; fi; ${prev_cmd:+$prev_cmd; }" EXIT
+}
+
+# Writes run metadata JSON to RUN_META_OUT if set. Only call on successful exit.
+# Usage: audit_write_run_meta <audit_id>
+audit_write_run_meta() {
+    [[ -n "${RUN_META_OUT:-}" ]] || return 0
+
+    local audit_id="${1:-}"
+    [[ -n "$audit_id" ]] || return 0
+
+    local platform="unknown"
+    if [[ "$(dirname "${BASH_SOURCE[0]:-.}")" == *"/linux/"* ]]; then
+        platform="linux"
+    elif [[ "$(dirname "${BASH_SOURCE[0]:-.}")" == *"/mac/"* ]]; then
+        platform="mac"
+    fi
+
+    # Make paths repo-relative (cmd.Dir=repoRoot so PWD=repoRoot)
+    _rel() {
+        local p="$1"
+        [[ -z "${PWD:-}" ]] && return
+        if [[ "$p" == "$PWD" ]]; then
+            echo "."
+        elif [[ "$p" == "$PWD"/* ]]; then
+            echo "${p#$PWD/}"
+        fi
+    }
+    local dir="$(_rel "$REPORT_DIR")"
+    [[ -z "$dir" ]] && dir="$REPORT_DIR"
+    local ndjson="$(_rel "${NDJSON_FILE:-}")"
+    [[ -z "$ndjson" ]] && ndjson="${NDJSON_FILE:-}"
+    local report="$(_rel "${REPORT_FILE:-}")"
+    [[ -z "$report" ]] && report="${REPORT_FILE:-}"
+
+    # JSON object, one line
+    printf '{"run_id":"%s","created_at":"%s","platform":"%s","audit_id":"%s","dir":"%s","ndjson":"%s","report":"%s"}\n' \
+        "$(printf '%s' "$RUN_ID" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+        "$(printf '%s' "${ISO_TIMESTAMP:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+        "$(printf '%s' "$platform" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+        "$(printf '%s' "$audit_id" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+        "$(printf '%s' "$dir" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+        "$(printf '%s' "$ndjson" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+        "$(printf '%s' "$report" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+        > "$RUN_META_OUT"
 }
 
 export AUDIT_INIT_LOADED=1

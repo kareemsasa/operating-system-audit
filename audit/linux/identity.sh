@@ -217,6 +217,8 @@ identity_main() {
     identity_parse_args "$@"
     identity_validate_and_resolve_paths
     identity_prepare_files_and_common
+    source "$(dirname "${BASH_SOURCE[0]}")/lib/init.sh"
+    audit_set_run_meta_trap "identity"
     identity_write_report_header_if_needed
     identity_init_ndjson_if_needed
     run_identity_audit

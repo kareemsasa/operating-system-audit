@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -113,24 +115,27 @@ func TestValidateManifest(t *testing.T) {
 
 func TestParseRunArgs(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		wantID     string
-		wantPass   []string
-		wantErr    bool
-		wantErrMsg string
+		name         string
+		args         []string
+		wantID       string
+		wantPass     []string
+		wantPrintMeta bool
+		wantErr      bool
+		wantErrMsg   string
 	}{
-		{"no args (error)", []string{}, "", nil, true, "missing command id"},
-		{"id only", []string{"full"}, "full", nil, false, ""},
-		{"id + -- + passthrough", []string{"full", "--", "-x", "y"}, "full", []string{"-x", "y"}, false, ""},
-		{"id + extra without -- (error)", []string{"full", "extra"}, "", nil, true, "pass-through"},
+		{"no args (error)", []string{}, "", nil, false, true, "missing command id"},
+		{"id only", []string{"full"}, "full", nil, false, false, ""},
+		{"id + -- + passthrough", []string{"full", "--", "-x", "y"}, "full", []string{"-x", "y"}, false, false, ""},
+		{"id + --print-run-meta", []string{"full", "--print-run-meta"}, "full", nil, true, false, ""},
+		{"id + --print-run-meta + -- + passthrough", []string{"full", "--print-run-meta", "--", "-x"}, "full", []string{"-x"}, true, false, ""},
+		{"id + extra without -- (error)", []string{"full", "extra"}, "", nil, false, true, "pass-through"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, pass, err := parseRunArgs(tt.args)
+			id, pass, printMeta, err := parseRunArgs(tt.args)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("parseRunArgs() = %q, %v, nil; want error containing %q", id, pass, tt.wantErrMsg)
+					t.Fatalf("parseRunArgs() = %q, %v, %v, nil; want error containing %q", id, pass, printMeta, tt.wantErrMsg)
 				}
 				if !strings.Contains(err.Error(), tt.wantErrMsg) {
 					t.Errorf("parseRunArgs() error = %v, want containing %q", err, tt.wantErrMsg)
@@ -146,6 +151,9 @@ func TestParseRunArgs(t *testing.T) {
 			}
 			if !sliceEqual(pass, tt.wantPass) {
 				t.Errorf("parseRunArgs() passthrough = %v, want %v", pass, tt.wantPass)
+			}
+			if printMeta != tt.wantPrintMeta {
+				t.Errorf("parseRunArgs() printMeta = %v, want %v", printMeta, tt.wantPrintMeta)
 			}
 		})
 	}
@@ -321,5 +329,101 @@ func TestResolveRepoRoot_FallbackToExtraction(t *testing.T) {
 	if extractedCleanup != nil {
 		extractedCleanup()
 		extractedCleanup = nil
+	}
+}
+
+// TestRunPrintRunMeta outputs valid JSON on stdout and logs on stderr.
+func TestRunPrintRunMeta(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("audit scripts only exist for linux/mac")
+	}
+	// Use module root (where go.mod lives) so dist/osaudit is found when built from repo
+	cwd, _ := os.Getwd()
+	for d := cwd; d != ""; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			cwd = d
+			break
+		}
+	}
+	root := cwd
+	bin := filepath.Join(root, "dist", "osaudit")
+	if _, err := os.Stat(bin); err != nil {
+		t.Skipf("dist/osaudit not built: %v (run: go build -o dist/osaudit ./cmd/osaudit)", err)
+	}
+
+	cmd := exec.Command(bin, "run", "execution", "--print-run-meta", "--", "--ndjson", "--redact-all")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "OSAUDIT_ROOT="+root)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		t.Fatalf("run failed: %v\nstderr: %s", err, stderr.String())
+	}
+
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		t.Fatal("stdout empty; expected JSON")
+	}
+	if stderr.Len() == 0 {
+		t.Error("stderr empty; expected logs")
+	}
+
+	var meta struct {
+		RunID     string `json:"run_id"`
+		CreatedAt string `json:"created_at"`
+		Platform  string `json:"platform"`
+		AuditID   string `json:"audit_id"`
+		Dir       string `json:"dir"`
+		NDJSON    string `json:"ndjson"`
+		Report    string `json:"report"`
+	}
+	if err := json.Unmarshal([]byte(out), &meta); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\nraw: %s", err, out)
+	}
+	if meta.AuditID != "execution" {
+		t.Errorf("audit_id = %q, want execution", meta.AuditID)
+	}
+	if meta.Platform != "linux" && meta.Platform != "mac" {
+		t.Errorf("platform = %q, want linux or mac", meta.Platform)
+	}
+	// dir should be timestamped: output/execution-audit/YYYYMMDD-HHMMSS
+	if !strings.Contains(meta.Dir, "output/execution-audit/") {
+		t.Errorf("dir = %q, want output/execution-audit/<timestamp>", meta.Dir)
+	}
+}
+
+// TestRunPrintRunMeta_NoJSONOnFailure verifies no JSON is printed when script fails.
+func TestRunPrintRunMeta_NoJSONOnFailure(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("audit scripts only exist for linux/mac")
+	}
+	cwd, _ := os.Getwd()
+	for d := cwd; d != ""; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			cwd = d
+			break
+		}
+	}
+	bin := filepath.Join(cwd, "dist", "osaudit")
+	if _, err := os.Stat(bin); err != nil {
+		t.Skipf("dist/osaudit not built: %v", err)
+	}
+
+	// Use unknown command id so run fails before script executes
+	cmd := exec.Command(bin, "run", "nonexistent-id", "--print-run-meta", "--", "--ndjson")
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), "OSAUDIT_ROOT="+cwd)
+	var stdout strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+
+	_ = cmd.Run() // expect non-zero exit
+
+	out := strings.TrimSpace(stdout.String())
+	if out != "" {
+		t.Errorf("stdout should be empty on failure, got: %s", out)
 	}
 }
