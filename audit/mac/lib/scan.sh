@@ -90,12 +90,12 @@ emit_recommendations() {
 
     (( ${#recs[@]} == 0 )) && return 0
 
-    echo "" >> "$REPORT_FILE"
-    echo "### Recommended Next Steps" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
+    report_append ""
+    report_append "### Recommended Next Steps"
+    report_append ""
     local i=1
     for r in "${recs[@]}"; do
-        echo "$i. $r" >> "$REPORT_FILE"
+        report_append "$i. $r"
         (( i += 1 ))
     done
 }
@@ -129,8 +129,8 @@ run_storage_audit() {
 
     echo -e "Scanning home directory size..."
 
-    echo "| Folder | Size |" >> "$REPORT_FILE"
-    echo "|--------|------|" >> "$REPORT_FILE"
+    report_append "| Folder | Size |"
+    report_append "|--------|------|"
 
     OVERVIEW_KB_DOWNLOADS=0
     OVERVIEW_KB_DESKTOP=0
@@ -157,7 +157,7 @@ run_storage_audit() {
         fi
         size=$(human_size_kb "$kb")
         echo -e "  ${CYAN}$folder_name${NC}: $size"
-        echo "| \`$folder_name\` | $size |" >> "$REPORT_FILE"
+        report_append "| \`$folder_name\` | $size |"
         folder_index=$((folder_index + 1))
     done < <(du -sk "$HOME_DIR"/*/ 2>/dev/null | sort -nr || true)
 
@@ -184,14 +184,14 @@ run_storage_audit() {
 
     if (( dotdir_kb > 0 )) && (( folder_index < 20 )); then
         echo -e "  ${CYAN}Hidden directories${NC}: $(human_size_kb "$dotdir_kb")"
-        echo "| \`Hidden directories\` | $(human_size_kb "$dotdir_kb") |" >> "$REPORT_FILE"
+        report_append "| \`Hidden directories\` | $(human_size_kb "$dotdir_kb") |"
     fi
 
     emit_top_items_ndjson "top_paths" "$TOP_PATHS_FILE" "$HEATMAP_EMIT_TOPN"
 
     total_size=$(human_size_kb "$total_kb")
     echo -e "\n  ${BOLD}Total home directory (visible directories only): $total_size${NC}"
-    echo -e "\n**Total home directory size (visible directories only):** $total_size\n" >> "$REPORT_FILE"
+    report_append -e "\n**Total home directory size (visible directories only):** $total_size\n"
     home_bytes=$((total_kb * 1024))
     section_end_ms=$(now_ms)
     emit_timing "disk_usage_overview" "$section_start_ms" "$section_end_ms"
@@ -272,15 +272,15 @@ run_storage_audit() {
 
     large_count=0
     large_ndjson_count=0
-    echo "| Size | File |" >> "$REPORT_FILE"
-    echo "|------|------|" >> "$REPORT_FILE"
+    report_append "| Size | File |"
+    report_append "|------|------|"
 
     while IFS=$'\t' read -r bytes file; do
         [ -n "$file" ] || continue
         size=$(du -sh "$file" 2>/dev/null | cut -f1)
         rel_path="${file#$HOME_DIR/}"
         echo -e "  ${RED}$size${NC}  $rel_path"
-        echo "| $size | \`$rel_path\` |" >> "$REPORT_FILE"
+        report_append "| $size | \`$rel_path\` |"
         ((large_count += 1))
         if [ -n "$NDJSON_FILE" ] && (( large_ndjson_count < 10 )); then
             ndjson_path=$(redact_path_for_ndjson "$file")
@@ -291,9 +291,9 @@ run_storage_audit() {
 
     if (( large_count == 0 )); then
         echo -e "  ${GREEN}No files found over ${LARGE_FILE_THRESHOLD_MB}MB${NC}"
-        echo "_No files found over ${LARGE_FILE_THRESHOLD_MB}MB._" >> "$REPORT_FILE"
+        report_append "_No files found over ${LARGE_FILE_THRESHOLD_MB}MB._"
     fi
-    echo "" >> "$REPORT_FILE"
+    report_append ""
     section_end_ms=$(now_ms)
     emit_timing "large_files" "$section_start_ms" "$section_end_ms"
 
@@ -333,7 +333,7 @@ run_storage_audit() {
     emit_timing "junk_scan_combined" "$junk_scan_start_ms" "$junk_scan_end_ms"
 
     echo -e "  .DS_Store files: ${YELLOW}$ds_count${NC}"
-    echo "- **\`.DS_Store\` files:** $ds_count" >> "$REPORT_FILE"
+    report_append "- **\`.DS_Store\` files:** $ds_count"
 
     installers_start_ms=$(now_ms)
     declare -a dmg_files=()
@@ -343,24 +343,24 @@ run_storage_audit() {
     done < <(scoped_find_pruned -type f -name "*.dmg" | sort)
     dmg_count=${#dmg_files[@]}
     echo -e "  .dmg installers: ${YELLOW}$dmg_count${NC}"
-    echo "- **\`.dmg\` installers:** $dmg_count" >> "$REPORT_FILE"
+    report_append "- **\`.dmg\` installers:** $dmg_count"
 
     if (( dmg_count > 0 )); then
-        echo "" >> "$REPORT_FILE"
-        echo "  DMG files found:" >> "$REPORT_FILE"
+        report_append ""
+        report_append "  DMG files found:"
         for f in "${dmg_files[@]}"; do
             rel="${f#$HOME_DIR/}"
             fsize=$(du -sh "$f" 2>/dev/null | cut -f1)
             echo -e "    ${CYAN}$fsize${NC}  $rel"
-            echo "  - \`$rel\` ($fsize)" >> "$REPORT_FILE"
+            report_append "  - \`$rel\` ($fsize)"
         done
-        echo "" >> "$REPORT_FILE"
+        report_append ""
     fi
 
     pkg_count=$(scoped_find_pruned -type f -name "*.pkg" | count_lines) || true
     pkg_count=${pkg_count:-0}
     echo -e "  .pkg installers: ${YELLOW}$pkg_count${NC}"
-    echo "- **\`.pkg\` installers:** $pkg_count" >> "$REPORT_FILE"
+    report_append "- **\`.pkg\` installers:** $pkg_count"
 
     if [ -d "$HOME_DIR/Downloads" ]; then
         zip_note=""
@@ -369,20 +369,20 @@ run_storage_audit() {
         zip_note="_Downloads folder not found; zip scan skipped._"
     fi
     echo -e "  .zip files in Downloads: ${YELLOW}$zip_dl_count${NC}"
-    echo "- **\`.zip\` files in Downloads:** $zip_dl_count" >> "$REPORT_FILE"
+    report_append "- **\`.zip\` files in Downloads:** $zip_dl_count"
     if [ -n "$zip_note" ]; then
         echo "  ${YELLOW}Downloads folder not found; zip scan skipped.${NC}"
-        echo "$zip_note" >> "$REPORT_FILE"
+        report_append "$zip_note"
     fi
     installers_end_ms=$(now_ms)
     emit_timing "installers" "$installers_start_ms" "$installers_end_ms"
 
     echo -e "  Windows artifacts (Thumbs.db, desktop.ini): ${YELLOW}$thumbs_count${NC}"
-    echo "- **Windows artifacts:** $thumbs_count" >> "$REPORT_FILE"
+    report_append "- **Windows artifacts:** $thumbs_count"
     echo -e "  Broken symlinks: ${YELLOW}$broken_links${NC}"
-    echo "- **Broken symlinks:** $broken_links" >> "$REPORT_FILE"
+    report_append "- **Broken symlinks:** $broken_links"
 
-    echo "" >> "$REPORT_FILE"
+    report_append ""
 
     # =============================================================================
     # 4. DOWNLOADS AUDIT
@@ -392,12 +392,12 @@ run_storage_audit() {
     if [ -d "$HOME_DIR/Downloads" ]; then
         dl_size=$(human_size_kb "${OVERVIEW_KB_DOWNLOADS:-0}")
         echo -e "  Total size: ${BOLD}$dl_size${NC} ($dl_file_count files)"
-        echo "**Total size:** $dl_size ($dl_file_count files)" >> "$REPORT_FILE"
+        report_append "**Total size:** $dl_size ($dl_file_count files)"
 
         echo -e "\n  ${CYAN}File type breakdown:${NC}"
-        echo -e "\n### File Type Breakdown\n" >> "$REPORT_FILE"
-        echo "| Type | Count | Total Size |" >> "$REPORT_FILE"
-        echo "|------|-------|------------|" >> "$REPORT_FILE"
+        report_append -e "\n### File Type Breakdown\n"
+        report_append "| Type | Count | Total Size |"
+        report_append "|------|-------|------------|"
 
         for ext in pdf dmg zip pkg png jpg jpeg gif mp4 mov mp3 doc docx xls xlsx csv txt html js py sh; do
             eval "count=\${ext_${ext}_count:-0}"
@@ -406,27 +406,27 @@ run_storage_audit() {
                 ext_kb=$((ext_bytes / 1024))
                 ext_size=$(human_size_kb "$ext_kb")
                 echo -e "    .$ext: ${YELLOW}$count files${NC} ($ext_size)"
-                echo "| \`.$ext\` | $count | $ext_size |" >> "$REPORT_FILE"
+                report_append "| \`.$ext\` | $count | $ext_size |"
             fi
         done
 
         echo -e "\n  ${CYAN}Old files (not accessed in ${OLD_FILE_DAYS}+ days):${NC}"
         echo -e "    Count: ${YELLOW}$old_dl_count${NC}"
-        echo -e "\n### Stale Downloads (${OLD_FILE_DAYS}+ days since last access)\n" >> "$REPORT_FILE"
-        echo "**Count:** $old_dl_count files" >> "$REPORT_FILE"
+        report_append -e "\n### Stale Downloads (${OLD_FILE_DAYS}+ days since last access)\n"
+        report_append "**Count:** $old_dl_count files"
 
         if (( old_dl_count > 0 )); then
             old_dl_kb=$((${old_dl_bytes:-0} / 1024))
             old_dl_size=$(human_size_kb "$old_dl_kb")
             echo -e "    Total size: ${YELLOW}$old_dl_size${NC}"
-            echo "**Total size:** $old_dl_size" >> "$REPORT_FILE"
+            report_append "**Total size:** $old_dl_size"
         fi
     else
         echo -e "  ${RED}Downloads folder not found${NC}"
-        echo "_Downloads folder not found._" >> "$REPORT_FILE"
+        report_append "_Downloads folder not found._"
     fi
 
-    echo "" >> "$REPORT_FILE"
+    report_append ""
 
     # =============================================================================
     # 5. DESKTOP AUDIT
@@ -438,11 +438,11 @@ run_storage_audit() {
         desktop_count=$({ find "$HOME_DIR/Desktop" -maxdepth 1 -not -name "." -not -name "cleanup-audit" -not -name "storage-audit" 2>/dev/null || true; } | count_lines)
         desktop_count=${desktop_count:-0}
         echo -e "  Items on Desktop: ${BOLD}$desktop_count${NC} ($desktop_size)"
-        echo "**Items on Desktop:** $desktop_count ($desktop_size)" >> "$REPORT_FILE"
+        report_append "**Items on Desktop:** $desktop_count ($desktop_size)"
 
         if (( desktop_count > 0 )); then
             echo -e "\n  ${CYAN}Desktop items:${NC}"
-            echo -e "\n### Desktop Items\n" >> "$REPORT_FILE"
+            report_append -e "\n### Desktop Items\n"
             while IFS= read -r item; do
                 [ -z "$item" ] && continue
                 name=$(basename "$item")
@@ -450,19 +450,19 @@ run_storage_audit() {
                 isize=$(du -sh "$item" 2>/dev/null | cut -f1)
                 if [ -d "$item" ]; then
                     echo -e "    📁 $name ($isize)"
-                    echo "- 📁 \`$name/\` ($isize)" >> "$REPORT_FILE"
+                    report_append "- 📁 \`$name/\` ($isize)"
                 else
                     echo -e "    📄 $name ($isize)"
-                    echo "- 📄 \`$name\` ($isize)" >> "$REPORT_FILE"
+                    report_append "- 📄 \`$name\` ($isize)"
                 fi
             done < <(find "$HOME_DIR/Desktop" -maxdepth 1 -not -name "." -not -path "$HOME_DIR/Desktop" 2>/dev/null | sort)
         fi
     else
         echo -e "  ${RED}Desktop folder not found${NC}"
-        echo "_Desktop folder not found._" >> "$REPORT_FILE"
+        report_append "_Desktop folder not found._"
     fi
 
-    echo "" >> "$REPORT_FILE"
+    report_append ""
 
     # =============================================================================
     # 6. DOCUMENTS AUDIT
@@ -477,13 +477,13 @@ run_storage_audit() {
         docs_file_count=${docs_file_count:-0}
         echo -e "  Total size: ${BOLD}$docs_size${NC}"
         echo -e "  Top-level: ${YELLOW}$docs_folder_count folders, $docs_file_count loose files${NC}"
-        echo "**Total size:** $docs_size" >> "$REPORT_FILE"
-        echo "**Top-level:** $docs_folder_count folders, $docs_file_count loose files" >> "$REPORT_FILE"
+        report_append "**Total size:** $docs_size"
+        report_append "**Top-level:** $docs_folder_count folders, $docs_file_count loose files"
 
         echo -e "\n  ${CYAN}Top folders by size:${NC}"
-        echo -e "\n### Top Folders by Size\n" >> "$REPORT_FILE"
-        echo "| Folder | Size |" >> "$REPORT_FILE"
-        echo "|--------|------|" >> "$REPORT_FILE"
+        report_append -e "\n### Top Folders by Size\n"
+        report_append "| Folder | Size |"
+        report_append "|--------|------|"
         while IFS=$'\t' read -r kb folder; do
             [ -n "$folder" ] || continue
             kb=${kb:-0}
@@ -492,26 +492,26 @@ run_storage_audit() {
             size=$(human_size_kb "$kb")
             printf '%s\t%s\n' "$folder_bytes" "$folder" >> "$TOP_DOCUMENTS_FOLDERS_FILE"
             echo -e "    📁 $fname: $size"
-            echo "| \`$fname\` | $size |" >> "$REPORT_FILE"
+            report_append "| \`$fname\` | $size |"
         done < <(du -sk "$HOME_DIR/Documents"/*/ 2>/dev/null | sort -nr -k1,1 | sed -n '1,15p')
 
         if (( docs_file_count > 0 )); then
             echo -e "\n  ${CYAN}Loose files in Documents root:${NC}"
-            echo -e "\n### Loose Files in Documents Root\n" >> "$REPORT_FILE"
+            report_append -e "\n### Loose Files in Documents Root\n"
             while IFS= read -r f; do
                 [ -z "$f" ] && continue
                 fname=$(basename "$f")
                 fsize=$(du -sh "$f" 2>/dev/null | cut -f1)
                 echo -e "    📄 $fname ($fsize)"
-                echo "- \`$fname\` ($fsize)" >> "$REPORT_FILE"
+                report_append "- \`$fname\` ($fsize)"
             done < <(find "$HOME_DIR/Documents" -maxdepth 1 -type f 2>/dev/null | sort | sed -n '1,30p')
         fi
     else
         echo -e "  ${RED}Documents folder not found${NC}"
-        echo "_Documents folder not found._" >> "$REPORT_FILE"
+        report_append "_Documents folder not found._"
     fi
 
-    echo "" >> "$REPORT_FILE"
+    report_append ""
 
     # =============================================================================
     # 7. NODE_MODULES / DEV BLOAT
@@ -528,14 +528,14 @@ run_storage_audit() {
     done < <(find "$HOME_DIR" -maxdepth 6 -type d -name "node_modules" -not -path "*/Library/*" 2>/dev/null | sort)
     nm_count=${#nm_dirs[@]}
     echo -e "  node_modules directories: ${YELLOW}$nm_count${NC}"
-    echo "### node_modules Directories: $nm_count" >> "$REPORT_FILE"
+    report_append "### node_modules Directories: $nm_count"
     node_modules_end_ms=$(now_ms)
     emit_timing "node_modules" "$node_modules_start_ms" "$node_modules_end_ms"
 
     if (( nm_count > 0 )); then
-        echo "" >> "$REPORT_FILE"
-        echo "| Location | Size |" >> "$REPORT_FILE"
-        echo "|----------|------|" >> "$REPORT_FILE"
+        report_append ""
+        report_append "| Location | Size |"
+        report_append "|----------|------|"
         for nm in "${nm_dirs[@]}"; do
             nm_kb=$(du -sk "$nm" 2>/dev/null | awk '{print $1}') || true
             nm_kb=${nm_kb:-0}
@@ -544,9 +544,9 @@ run_storage_audit() {
             printf '%s\t%s\n' "$nm_bytes" "$nm" >> "$TOP_NODE_MODULES_FILE"
             rel="${nm#$HOME_DIR/}"
             echo -e "    ${CYAN}$nm_size${NC}  $rel"
-            echo "| \`$rel\` | $nm_size |" >> "$REPORT_FILE"
+            report_append "| \`$rel\` | $nm_size |"
         done
-        echo "" >> "$REPORT_FILE"
+        report_append ""
     fi
 
     venv_dirs_count=$({ find "$HOME_DIR" -maxdepth 5 -type d \( -name ".venv" -o -name "venv" \) -not -path "*/Library/*" 2>/dev/null || true; } | count_lines)
@@ -556,17 +556,17 @@ run_storage_audit() {
     venv_count=$((venv_dirs_count + pycache_dirs_count))
     venv_count=${venv_count:-0}
     echo -e "  Python venvs / __pycache__: ${YELLOW}$venv_count${NC}"
-    echo "### Python Virtual Envs / Cache: $venv_count" >> "$REPORT_FILE"
+    report_append "### Python Virtual Envs / Cache: $venv_count"
 
     git_start_ms=$(now_ms)
     git_count=$({ find "$HOME_DIR" -maxdepth 5 -type d -name ".git" -not -path "*/Library/*" 2>/dev/null || true; } | count_lines)
     git_count=${git_count:-0}
     echo -e "  Git repositories: ${YELLOW}$git_count${NC}"
-    echo "### Git Repositories: $git_count" >> "$REPORT_FILE"
+    report_append "### Git Repositories: $git_count"
     git_end_ms=$(now_ms)
     emit_timing "git_repositories" "$git_start_ms" "$git_end_ms"
 
-    echo "" >> "$REPORT_FILE"
+    report_append ""
 
     # =============================================================================
     # 8. DUPLICATE FILE DETECTION (basic, by name + size)
@@ -574,7 +574,7 @@ run_storage_audit() {
     section_header "🔍 Potential Duplicate Files"
 
     echo -e "Scanning for potential duplicates (same name + same size)..."
-    echo -e "_Checking Downloads, Desktop, and Documents for files with identical names and sizes._\n" >> "$REPORT_FILE"
+    report_append -e "_Checking Downloads, Desktop, and Documents for files with identical names and sizes._\n"
 
     dup_found=0
     for dir in "$HOME_DIR/Downloads" "$HOME_DIR/Desktop" "$HOME_DIR/Documents"; do
@@ -590,24 +590,24 @@ run_storage_audit() {
 
         if (( copy_count > 0 )); then
             echo -e "\n  ${CYAN}$dir_name — possible copies:${NC}"
-            echo "### $dir_name\n" >> "$REPORT_FILE"
+            report_append -e "### $dir_name\n"
             for c in "${copies[@]}"; do
                 cname=$(basename "$c")
                 csize=$(du -sh "$c" 2>/dev/null | cut -f1)
                 echo -e "    ${YELLOW}$cname${NC} ($csize)"
-                echo "- \`$cname\` ($csize)" >> "$REPORT_FILE"
+                report_append "- \`$cname\` ($csize)"
                 ((dup_found += 1))
             done
-            echo "" >> "$REPORT_FILE"
+            report_append ""
         fi
     done
 
     if (( dup_found == 0 )); then
         echo -e "  ${GREEN}No obvious duplicates found${NC}"
-        echo "_No obvious duplicates found._" >> "$REPORT_FILE"
+        report_append "_No obvious duplicates found._"
     fi
 
-    echo "" >> "$REPORT_FILE"
+    report_append ""
 
     # =============================================================================
     # 9. TRASH SIZE
@@ -622,15 +622,15 @@ run_storage_audit() {
         trash_count="$(soft_out_probe "storage.find_trash_items" find "$TRASH_DIR" -mindepth 1 -maxdepth 1 | count_lines)"
         trash_count=${trash_count:-0}
         echo -e "  Trash size: ${BOLD}$trash_size${NC} ($trash_count files)"
-        echo "**Trash size:** $trash_size ($trash_count files)" >> "$REPORT_FILE"
-        echo "" >> "$REPORT_FILE"
-        echo "_Empty Trash in Finder to reclaim this space._" >> "$REPORT_FILE"
+        report_append "**Trash size:** $trash_size ($trash_count files)"
+        report_append ""
+        report_append "_Empty Trash in Finder to reclaim this space._"
     else
         echo -e "  ${GREEN}Trash is empty${NC}"
-        echo "_Trash is empty._" >> "$REPORT_FILE"
+        report_append "_Trash is empty._"
     fi
 
-    echo "" >> "$REPORT_FILE"
+    report_append ""
     trash_end_ms=$(now_ms)
     emit_timing "trash" "$trash_start_ms" "$trash_end_ms"
 

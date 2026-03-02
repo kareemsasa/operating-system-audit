@@ -17,6 +17,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -49,7 +50,7 @@ execution_write_report_header_if_needed() {
     if [[ "${EXECUTION_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # 🏃 Mac Execution & Processes Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -90,38 +91,38 @@ run_execution_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🔥 Top Processes by CPU"
-    echo "| PID | User | CPU% | MEM% | Command |" >> "$REPORT_FILE"
-    echo "|-----|------|------|------|---------|" >> "$REPORT_FILE"
+    report_append "| PID | User | CPU% | MEM% | Command |"
+    report_append "|-----|------|------|------|---------|"
     local cpu_items=""
     while IFS=$'\t' read -r pid user cpu mem command; do
         [ -n "$pid" ] || continue
-        echo "| $pid | \`$user\` | $cpu | $mem | \`$command\` |" >> "$REPORT_FILE"
+        report_append "| $pid | \`$user\` | $cpu | $mem | \`$command\` |"
         item="{\"pid\":${pid:-0},\"user\":$(json_escape "$user"),\"cpu_pct\":${cpu:-0},\"command\":$(json_escape "$command")}"
         if [ -z "$cpu_items" ]; then
             cpu_items="$item"
         else
             cpu_items="${cpu_items},${item}"
         fi
-    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | sort -t$'\t' -k3,3nr | sed -n '1,15p')
+    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | maybe_redact_all_text | sort -t$'\t' -k3,3nr | sed -n '1,15p')
     append_ndjson_line "{\"type\":\"top_processes_cpu\",\"run_id\":$(json_escape "$RUN_ID"),\"items\":[${cpu_items}]}"
     section_end_ms=$(now_ms)
     emit_timing "top_processes_cpu" "$section_start_ms" "$section_end_ms"
 
     section_start_ms=$(now_ms)
     section_header "🧠 Top Processes by Memory"
-    echo "| PID | User | MEM% | CPU% | Command |" >> "$REPORT_FILE"
-    echo "|-----|------|------|------|---------|" >> "$REPORT_FILE"
+    report_append "| PID | User | MEM% | CPU% | Command |"
+    report_append "|-----|------|------|------|---------|"
     local mem_items=""
     while IFS=$'\t' read -r pid user cpu mem command; do
         [ -n "$pid" ] || continue
-        echo "| $pid | \`$user\` | $mem | $cpu | \`$command\` |" >> "$REPORT_FILE"
+        report_append "| $pid | \`$user\` | $mem | $cpu | \`$command\` |"
         item="{\"pid\":${pid:-0},\"user\":$(json_escape "$user"),\"mem_pct\":${mem:-0},\"command\":$(json_escape "$command")}"
         if [ -z "$mem_items" ]; then
             mem_items="$item"
         else
             mem_items="${mem_items},${item}"
         fi
-    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | sort -t$'\t' -k4,4nr | sed -n '1,15p')
+    done < <(soft_out_probe "execution.ps_aux" ps aux | awk 'NR==1{next} {cmd=$11; for(i=12;i<=NF;i++) cmd=cmd " " $i; printf "%s\t%s\t%s\t%s\t%s\n",$2,$1,$3,$4,cmd}' | maybe_redact_all_text | sort -t$'\t' -k4,4nr | sed -n '1,15p')
     append_ndjson_line "{\"type\":\"top_processes_mem\",\"run_id\":$(json_escape "$RUN_ID"),\"items\":[${mem_items}]}"
     section_end_ms=$(now_ms)
     emit_timing "top_processes_mem" "$section_start_ms" "$section_end_ms"
@@ -132,9 +133,9 @@ run_execution_audit() {
     login_items_count=0
     if [ -n "$login_items_raw" ]; then
         login_items_count=$(echo "$login_items_raw" | awk -F',' '{print NF}')
-        echo "- Login items: \`$login_items_raw\`" >> "$REPORT_FILE"
+        report_append "- Login items: \`$login_items_raw\`"
     else
-        echo "- Login items: _none detected or unavailable_" >> "$REPORT_FILE"
+        report_append "- Login items: _none detected or unavailable_"
     fi
 
     cron_raw="$(soft_out_probe "execution.crontab_l" crontab -l)"
@@ -143,11 +144,11 @@ run_execution_audit() {
     else
         cron_jobs_count=0
     fi
-    echo "- User cron jobs: **${cron_jobs_count:-0}**" >> "$REPORT_FILE"
+    report_append "- User cron jobs: **${cron_jobs_count:-0}**"
 
-    echo "" >> "$REPORT_FILE"
-    echo "User Launch Agents:" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
+    report_append ""
+    report_append "User Launch Agents:"
+    report_append ""
     user_launch_agents_count=0
     shopt -s nullglob
     for plist in "$HOME_DIR"/Library/LaunchAgents/*.plist; do
@@ -159,12 +160,12 @@ run_execution_audit() {
         fi
         program="${program:-unknown}"
         safe_plist="$(redact_path_for_ndjson "$plist")"
-        echo "- \`$safe_plist\` → label=\`$label\`, program=\`$program\`" >> "$REPORT_FILE"
+        report_append "- \`$safe_plist\` → label=\`$label\`, program=\`$program\`"
         user_launch_agents_count=$((user_launch_agents_count + 1))
     done
     shopt -u nullglob
     if (( user_launch_agents_count == 0 )); then
-        echo "- _No user LaunchAgents found._" >> "$REPORT_FILE"
+        report_append "- _No user LaunchAgents found._"
     fi
     append_ndjson_line "{\"type\":\"scheduled_tasks\",\"run_id\":$(json_escape "$RUN_ID"),\"cron_jobs\":${cron_jobs_count:-0},\"user_launch_agents\":${user_launch_agents_count:-0},\"login_items\":${login_items_count:-0}}"
     section_end_ms=$(now_ms)
@@ -176,8 +177,8 @@ run_execution_audit() {
     total_processes="${total_processes:-0}"
     running_daemons="$(soft_out_probe "execution.launchctl_list" launchctl list | awk 'NR>1 {c++} END{print c+0}')"
     running_daemons="${running_daemons:-0}"
-    echo "- Total running processes: **$total_processes**" >> "$REPORT_FILE"
-    echo "- Running launchctl entries: **$running_daemons**" >> "$REPORT_FILE"
+    report_append "- Total running processes: **$total_processes**"
+    report_append "- Running launchctl entries: **$running_daemons**"
     append_ndjson_line "{\"type\":\"execution_summary\",\"run_id\":$(json_escape "$RUN_ID"),\"total_processes\":${total_processes:-0},\"running_daemons\":${running_daemons:-0},\"cron_jobs\":${cron_jobs_count:-0},\"user_launch_agents\":${user_launch_agents_count:-0}}"
     section_end_ms=$(now_ms)
     emit_timing "execution_summary" "$section_start_ms" "$section_end_ms"

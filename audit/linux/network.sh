@@ -17,6 +17,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -49,7 +50,7 @@ network_write_report_header_if_needed() {
     if [[ "${NETWORK_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # 🌐 Linux Network Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -90,8 +91,8 @@ run_network_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🔌 Active Network Interfaces"
-    echo "| Interface | IP | Status |" >> "$REPORT_FILE"
-    echo "|-----------|----|--------|" >> "$REPORT_FILE"
+    report_append "| Interface | IP | Status |"
+    report_append "|-----------|----|--------|"
     local interfaces_items=""
     if command -v ip >/dev/null 2>&1; then
         while IFS= read -r line; do
@@ -108,7 +109,7 @@ run_network_audit() {
             ip="${ip:-none}"
             # Strip CIDR suffix
             ip="${ip%%/*}"
-            echo "| \`$iface\` | $ip | $status |" >> "$REPORT_FILE"
+            report_append "| \`$iface\` | $ip | $status |"
             item="{\"name\":$(json_escape "$iface"),\"ip\":$(json_escape "$ip"),\"status\":$(json_escape "$status")}"
             if [ -z "$interfaces_items" ]; then
                 interfaces_items="$item"
@@ -127,7 +128,7 @@ run_network_audit() {
             if echo "$iface_info" | grep -q "UP"; then
                 status="active"
             fi
-            echo "| \`$iface\` | $ip | $status |" >> "$REPORT_FILE"
+            report_append "| \`$iface\` | $ip | $status |"
             item="{\"name\":$(json_escape "$iface"),\"ip\":$(json_escape "$ip"),\"status\":$(json_escape "$status")}"
             if [ -z "$interfaces_items" ]; then
                 interfaces_items="$item"
@@ -138,7 +139,7 @@ run_network_audit() {
         done < <(ifconfig -a 2>/dev/null | awk '/^[a-z]/ {print $1}' | tr -d ':' || true)
     fi
     if (( interfaces_count == 0 )); then
-        echo "_No interfaces discovered._" >> "$REPORT_FILE"
+        report_append "_No interfaces discovered._"
     fi
     append_ndjson_line "{\"type\":\"network_interfaces\",\"run_id\":$(json_escape "$RUN_ID"),\"items\":[${interfaces_items}]}"
     section_end_ms=$(now_ms)
@@ -146,13 +147,13 @@ run_network_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🎧 Listening TCP Ports"
-    echo "| Process | PID | Port |" >> "$REPORT_FILE"
-    echo "|---------|-----|------|" >> "$REPORT_FILE"
+    report_append "| Process | PID | Port |"
+    report_append "|---------|-----|------|"
     local listening_items=""
     if command -v ss >/dev/null 2>&1; then
         while IFS=$'\t' read -r pname pid port; do
             [ -n "$port" ] || continue
-            echo "| \`$pname\` | $pid | $port |" >> "$REPORT_FILE"
+            report_append "| \`$pname\` | $pid | $port |"
             item="{\"process\":$(json_escape "$pname"),\"pid\":${pid:-0},\"port\":${port:-0}}"
             if [ -z "$listening_items" ]; then
                 listening_items="$item"
@@ -168,7 +169,7 @@ run_network_audit() {
         }' | sed -n '1,20p')
     fi
     if (( listening_count == 0 )); then
-        echo "_No listening TCP ports discovered (or probe unavailable)._" >> "$REPORT_FILE"
+        report_append "_No listening TCP ports discovered (or probe unavailable)._"
     fi
     append_ndjson_line "{\"type\":\"listening_ports\",\"run_id\":$(json_escape "$RUN_ID"),\"count\":${listening_count:-0},\"items\":[${listening_items}]}"
     section_end_ms=$(now_ms)
@@ -176,25 +177,25 @@ run_network_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🧭 DNS Configuration"
-    echo "Configured DNS servers:" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
+    report_append "Configured DNS servers:"
+    report_append ""
     local dns_count=0
     if command -v resolvectl >/dev/null 2>&1; then
         while IFS= read -r dns; do
             [ -n "$dns" ] || continue
-            echo "- \`$dns\`" >> "$REPORT_FILE"
+            report_append "- \`$dns\`"
             dns_count=$((dns_count + 1))
         done < <(soft_out_probe "network.resolvectl_dns" resolvectl dns 2>/dev/null | awk '{for(i=2;i<=NF;i++) print $i}' | sort -u || true)
     fi
     if (( dns_count == 0 )) && [ -f /etc/resolv.conf ]; then
         while IFS= read -r dns; do
             [ -n "$dns" ] || continue
-            echo "- \`$dns\`" >> "$REPORT_FILE"
+            report_append "- \`$dns\`"
             dns_count=$((dns_count + 1))
         done < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf | sort -u || true)
     fi
     if (( dns_count == 0 )); then
-        echo "_No DNS servers discovered._" >> "$REPORT_FILE"
+        report_append "_No DNS servers discovered._"
     fi
     section_end_ms=$(now_ms)
     emit_timing "dns_configuration" "$section_start_ms" "$section_end_ms"
@@ -229,8 +230,8 @@ run_network_audit() {
             firewall_backend="iptables"
         fi
     fi
-    echo "- Firewall enabled: **$firewall_enabled**" >> "$REPORT_FILE"
-    echo "- Firewall backend: **$firewall_backend**" >> "$REPORT_FILE"
+    report_append "- Firewall enabled: **$firewall_enabled**"
+    report_append "- Firewall backend: **$firewall_backend**"
     append_ndjson_line "{\"type\":\"firewall_status\",\"run_id\":$(json_escape "$RUN_ID"),\"enabled\":$firewall_enabled,\"backend\":$(json_escape "$firewall_backend")}"
     section_end_ms=$(now_ms)
     emit_timing "firewall_status" "$section_start_ms" "$section_end_ms"
@@ -243,7 +244,7 @@ run_network_audit() {
         established_count=$(netstat -an 2>/dev/null | awk '/ESTABLISHED/ {c++} END{print c+0}' || true)
     fi
     established_count=${established_count:-0}
-    echo "- Established TCP connections: **$established_count**" >> "$REPORT_FILE"
+    report_append "- Established TCP connections: **$established_count**"
     section_end_ms=$(now_ms)
     emit_timing "active_connections" "$section_start_ms" "$section_end_ms"
 
@@ -263,8 +264,8 @@ run_network_audit() {
     fi
     ssid="${ssid:-unknown}"
     bssid="${bssid:-unknown}"
-    echo "- SSID: \`$ssid\`" >> "$REPORT_FILE"
-    echo "- BSSID: \`$bssid\`" >> "$REPORT_FILE"
+    report_append "- SSID: \`$ssid\`"
+    report_append "- BSSID: \`$bssid\`"
     section_end_ms=$(now_ms)
     emit_timing "wifi_info" "$section_start_ms" "$section_end_ms"
 

@@ -32,6 +32,7 @@ _common_validate_required_context() {
     _common_require_var_set "REPORT_FILE" || return 1
     _common_require_var_set "SOFT_FAILURE_LOG" || return 1
     _common_require_var_set "REDACT_PATHS" || return 1
+    _common_require_var_set "REDACT_ALL" || return 1
     _common_require_var_set "HOME_DIR" || return 1
     _common_require_var_set "CURRENT_USER" || return 1
 
@@ -148,6 +149,84 @@ redact_path_for_ndjson() {
     esac
 }
 
+# Keep binary path, drop all arguments. Use for process command lines.
+# Example: "/opt/brave-bin/brave --type=renderer --crashpad-handler-pid=7400 ..." -> "/opt/brave-bin/brave <args>"
+redact_command() {
+    local s="$1"
+    if [[ "$s" != *" "* ]]; then
+        echo "$s"
+        return
+    fi
+    local first="${s%% *}"
+    echo "${first} <args>"
+}
+
+# Append text to report file. When REDACT_ALL, text is redacted. Use for all report output.
+# Usage: report_append "line"
+#        report_append -e "\n## Section\n"   # interpret backslash escapes
+report_append() {
+    if [[ "${1:-}" == "-e" ]]; then
+        shift
+        printf '%b\n' "$*" | maybe_redact_all_text >> "$REPORT_FILE"
+    else
+        printf '%s\n' "$*" | maybe_redact_all_text >> "$REPORT_FILE"
+    fi
+}
+
+# Overwrite report file with stdin. When REDACT_ALL, content is redacted.
+# Usage: cat << EOF | report_write
+report_write() {
+    maybe_redact_all_text > "$REPORT_FILE"
+}
+
+# Pipeline helper: redact when REDACT_ALL, else pass through. Use in pipes: ... | maybe_redact_all_text | ...
+maybe_redact_all_text() {
+    if [[ "${REDACT_ALL:-false}" == "true" ]]; then
+        redact_all_text
+    else
+        cat
+    fi
+}
+
+# Apply all redaction layers when REDACT_ALL is true. Use for arbitrary text output.
+# When called with no args in a pipeline, reads from stdin.
+redact_all_text() {
+    local s
+    if [[ $# -gt 0 ]]; then
+        s="$1"
+    else
+        s="$(cat)"
+    fi
+    if ! _common_is_true "$REDACT_ALL"; then
+        echo "$s"
+        return
+    fi
+    # Order: user, hostname, home, then token patterns, then command truncation
+    s=$(echo "$s" | sed -e "s#${HOME_DIR}#~#g" \
+        -e "s#${CURRENT_USER}#<user>#g" \
+        -e "s#${HOSTNAME_VAL}#<hostname>#g")
+    # SSH fingerprints
+    s=$(echo "$s" | sed -E 's/SHA256:[A-Za-z0-9+/=]+/SHA256:<redacted>/g')
+    # Long hex strings (32+ chars)
+    s=$(echo "$s" | sed -E 's/[A-Fa-f0-9]{32,}/<redacted>/g')
+    # Base64 blobs (20+ chars after =)
+    s=$(echo "$s" | sed -E 's/=([A-Za-z0-9+/=]{20,})/=<redacted>/g')
+    # key=, token=, secret= values
+    s=$(echo "$s" | sed -E 's/(key|token|secret)=[^[:space:]]+/\1=<redacted>/gi')
+    # Process command lines (contains -- or starts with /)
+    local line result=""
+    while IFS= read -r line; do
+        if [[ "$line" == *"--"* || "$line" == /* ]]; then
+            result="${result}$(redact_command "$line")
+"
+        else
+            result="${result}${line}
+"
+        fi
+    done <<< "$s"
+    echo -n "${result%$'\n'}"
+}
+
 now_ms() {
     if command -v perl >/dev/null 2>&1; then
         perl -MTime::HiRes=time -e 'printf("%.0f\n", time()*1000)'
@@ -167,7 +246,7 @@ emit_timing() {
 
 section_header() {
     echo -e "\n${BOLD}${YELLOW}━━━ $1 ━━━${NC}"
-    echo -e "\n## $1\n" >> "$REPORT_FILE"
+    report_append -e "\n## $1\n"
 }
 
 count_lines() {

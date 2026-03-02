@@ -17,6 +17,7 @@ Options:
   --ndjson               Also write a compact NDJSON summary file
   --redact-paths         Redact NDJSON paths (default: on when --ndjson)
   --no-redact-paths      Disable NDJSON path redaction (default off otherwise)
+  --redact-all           Redact all sensitive text (implies --redact-paths)
   --no-color             Disable ANSI colors in terminal output
   -h, --help             Show this help and exit
 EOF
@@ -49,7 +50,7 @@ persistence_write_report_header_if_needed() {
     if [[ "${PERSISTENCE_HEADER_READY:-false}" == "true" ]]; then
         return 0
     fi
-    cat > "$REPORT_FILE" << EOF
+    cat << EOF | report_write
 # 🧷 Mac Persistence Surfaces Audit
 **Generated:** $(date "+%B %d, %Y at %I:%M %p")
 **Home Directory:** $HOME_DIR
@@ -90,8 +91,8 @@ run_persistence_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🧱 System Launch Daemons"
-    echo "| Label | Program | File |" >> "$REPORT_FILE"
-    echo "|-------|---------|------|" >> "$REPORT_FILE"
+    report_append "| Label | Program | File |"
+    report_append "|-------|---------|------|"
     local daemon_items=""
     shopt -s nullglob
     for plist in /Library/LaunchDaemons/*.plist; do
@@ -102,7 +103,7 @@ run_persistence_audit() {
             program="$(soft_out_probe "persistence.launchdaemons_defaults_programarguments" defaults read "$plist" ProgramArguments | awk 'NR==2 {gsub(/[ ;"]/,"",$0); print $0; exit}')"
         fi
         program="${program:-unknown}"
-        echo "| \`$label\` | \`$program\` | \`$plist\` |" >> "$REPORT_FILE"
+        report_append "| \`$label\` | \`$program\` | \`$plist\` |"
         if (( system_daemons_count < 20 )); then
             item="{\"label\":$(json_escape "$label"),\"program\":$(json_escape "$program")}"
             if [ -z "$daemon_items" ]; then
@@ -120,24 +121,24 @@ run_persistence_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🧬 Launch Agents (System + User)"
-    echo "- System LaunchAgents:" >> "$REPORT_FILE"
+    report_append "- System LaunchAgents:"
     shopt -s nullglob
     for plist in /Library/LaunchAgents/*.plist; do
-        echo "  - \`$plist\`" >> "$REPORT_FILE"
+        report_append "  - \`$plist\`"
         system_agents_count=$((system_agents_count + 1))
     done
-    echo "- User LaunchAgents:" >> "$REPORT_FILE"
+    report_append "- User LaunchAgents:"
     for plist in "$HOME_DIR"/Library/LaunchAgents/*.plist; do
         safe_plist="$(redact_path_for_ndjson "$plist")"
-        echo "  - \`$safe_plist\`" >> "$REPORT_FILE"
+        report_append "  - \`$safe_plist\`"
         user_agents_count=$((user_agents_count + 1))
     done
     shopt -u nullglob
     if (( system_agents_count == 0 )); then
-        echo "  - _none_" >> "$REPORT_FILE"
+        report_append "  - _none_"
     fi
     if (( user_agents_count == 0 )); then
-        echo "  - _none_" >> "$REPORT_FILE"
+        report_append "  - _none_"
     fi
     append_ndjson_line "{\"type\":\"launch_agents\",\"run_id\":$(json_escape "$RUN_ID"),\"system_count\":${system_agents_count:-0},\"user_count\":${user_agents_count:-0}}"
     section_end_ms=$(now_ms)
@@ -175,12 +176,12 @@ run_persistence_audit() {
             third_party_kexts_count=$((third_party_kexts_count + 1))
         done < <(soft_out_probe "persistence.kextstat" kextstat | awk 'NR>1 {print $6 "\t" $4}')
     fi
-    echo "- Third-party kernel extensions: **${third_party_kexts_count:-0}**" >> "$REPORT_FILE"
+    report_append "- Third-party kernel extensions: **${third_party_kexts_count:-0}**"
     sysext_out="$(soft_out_probe "persistence.systemextensionsctl_list" systemextensionsctl list)"
     if [ -n "$sysext_out" ]; then
-        echo "- System extensions output captured (best effort)." >> "$REPORT_FILE"
+        report_append "- System extensions output captured (best effort)."
     else
-        echo "- System extensions output unavailable (permissions or unsupported environment)." >> "$REPORT_FILE"
+        report_append "- System extensions output unavailable (permissions or unsupported environment)."
     fi
     append_ndjson_line "{\"type\":\"kernel_extensions\",\"run_id\":$(json_escape "$RUN_ID"),\"third_party_count\":${third_party_kexts_count:-0},\"items\":[${kext_items}]}"
     section_end_ms=$(now_ms)
@@ -193,16 +194,16 @@ run_persistence_audit() {
     if [ -n "${login_hook:-}" ] || [ -n "${logout_hook:-}" ]; then
         login_hooks=true
     fi
-    echo "- LoginHook: \`${login_hook:-unset}\`" >> "$REPORT_FILE"
-    echo "- LogoutHook: \`${logout_hook:-unset}\`" >> "$REPORT_FILE"
+    report_append "- LoginHook: \`${login_hook:-unset}\`"
+    report_append "- LogoutHook: \`${logout_hook:-unset}\`"
     if [ -d "/Library/Security/SecurityAgentPlugins" ]; then
-        echo "- SecurityAgentPlugins:" >> "$REPORT_FILE"
+        report_append "- SecurityAgentPlugins:"
         while IFS= read -r plugin; do
             [ -n "$plugin" ] || continue
-            echo "  - \`$plugin\`" >> "$REPORT_FILE"
+            report_append "  - \`$plugin\`"
         done < <(ls /Library/Security/SecurityAgentPlugins 2>/dev/null || true)
     else
-        echo "- SecurityAgentPlugins directory not present." >> "$REPORT_FILE"
+        report_append "- SecurityAgentPlugins directory not present."
     fi
     section_end_ms=$(now_ms)
     emit_timing "login_hooks_authorization_plugins" "$section_start_ms" "$section_end_ms"
