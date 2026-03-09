@@ -32,10 +32,9 @@ type manifest struct {
 }
 
 type auditCommand struct {
-	ID      string   `json:"id"`
-	OS      []string `json:"os"`
-	Display string   `json:"display"`
-	Exec    []string `json:"exec"`
+	ID      string              `json:"id"`
+	Display string              `json:"display"`
+	OSExec  map[string][]string `json:"os_exec"`
 }
 
 var commandIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -70,33 +69,34 @@ func run(args []string) int {
 		fatalf("%v\n", err)
 	}
 
-	commands, err := loadCommands(filepath.Join(repoRoot, "cli", "commands.json"), detectedOS)
+	commands, err := loadCommands(filepath.Join(repoRoot, "cli", "commands.json"))
 	if err != nil {
 		fatalf("%v\n", err)
 	}
+	supported := commandsForCurrentOS(commands, detectedOS)
 	noCommandsMessage := fmt.Sprintf("no commands available for detected OS: %s", detectedOS)
 
 	if len(args) == 0 {
-		if len(commands) == 0 {
+		if len(supported) == 0 {
 			fmt.Println(noCommandsMessage)
 			return 0
 		}
-		runMenu(commands, detectedOS, repoRoot)
+		runMenu(supported, detectedOS, repoRoot)
 		return 0
 	}
 
 	switch args[0] {
 	case "list":
-		if len(commands) == 0 {
+		if len(supported) == 0 {
 			fmt.Println(noCommandsMessage)
 			return 0
 		}
-		printCommandList(commands)
+		printCommandList(supported)
 		return 0
 	case "run":
-		return runSubcommand(commands, repoRoot, args[1:])
+		return runSubcommand(commands, repoRoot, detectedOS, args[1:])
 	case "run-scheduled":
-		return runRunScheduled(commands, repoRoot, args[1:])
+		return runRunScheduled(commands, repoRoot, detectedOS, args[1:])
 	case "schedule":
 		return runSchedule(repoRoot, args[1:])
 	case "diff":
@@ -203,7 +203,7 @@ func extractEmbedded() (string, func(), error) {
 	return tmpDir, cleanup, nil
 }
 
-func loadCommands(manifestPath, detectedOS string) ([]auditCommand, error) {
+func loadCommands(manifestPath string) ([]auditCommand, error) {
 	file, err := os.Open(manifestPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -226,14 +226,7 @@ func loadCommands(manifestPath, detectedOS string) ([]auditCommand, error) {
 		return nil, fmt.Errorf("invalid manifest: %w", err)
 	}
 
-	filtered := make([]auditCommand, 0, len(m.Commands))
-	for _, cmd := range m.Commands {
-		if commandSupportsOS(cmd, detectedOS) {
-			filtered = append(filtered, cmd)
-		}
-	}
-
-	return filtered, nil
+	return m.Commands, nil
 }
 
 func validateManifest(repoRoot string, m manifest) error {
@@ -263,34 +256,31 @@ func validateManifestCommand(repoRoot string, cmd auditCommand, index int, seenI
 	if !commandIDPattern.MatchString(id) {
 		return fmt.Errorf("%s: id must match %q", ref, commandIDPattern.String())
 	}
-	for _, osName := range cmd.OS {
-		key := osName + ":" + id
-		if firstIndex, exists := seenIDs[key]; exists {
-			return fmt.Errorf("%s: duplicate id %q for os %q (already defined at command[%d])", ref, id, osName, firstIndex)
-		}
-		seenIDs[key] = index
+	if firstIndex, exists := seenIDs[id]; exists {
+		return fmt.Errorf("%s: duplicate id %q (already defined at command[%d])", ref, id, firstIndex)
 	}
+	seenIDs[id] = index
 
 	if strings.TrimSpace(cmd.Display) == "" {
 		return fmt.Errorf("%s: display is required", ref)
 	}
-	if err := validateManifestOSValues(ref, cmd.OS); err != nil {
-		return err
-	}
-	if err := validateManifestExecPath(repoRoot, ref, cmd.Exec); err != nil {
+	if err := validateManifestOSExecTargets(repoRoot, ref, cmd.OSExec); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func validateManifestOSValues(ref string, values []string) error {
-	if len(values) < 1 {
-		return fmt.Errorf("%s: os must contain at least one value", ref)
+func validateManifestOSExecTargets(repoRoot, ref string, osExec map[string][]string) error {
+	if len(osExec) < 1 {
+		return fmt.Errorf("%s: os_exec must contain at least one target", ref)
 	}
-	for _, osName := range values {
+	for osName, execValues := range osExec {
 		if _, ok := validManifestOS[osName]; !ok {
-			return fmt.Errorf("%s: os contains unsupported value %q (allowed: mac, linux, windows)", ref, osName)
+			return fmt.Errorf("%s: os_exec contains unsupported OS key %q (allowed: mac, linux, windows)", ref, osName)
+		}
+		if err := validateManifestExecPath(repoRoot, fmt.Sprintf("%s: os_exec[%q]", ref, osName), execValues); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -330,13 +320,23 @@ func validateManifestExecPath(repoRoot, ref string, execValues []string) error {
 	return nil
 }
 
-func commandSupportsOS(cmd auditCommand, detectedOS string) bool {
-	for _, osName := range cmd.OS {
-		if osName == detectedOS {
-			return true
+// commandsForCurrentOS returns only commands that have an os_exec target for the given OS.
+// Used for list and menu so users see only runnable commands.
+func commandsForCurrentOS(commands []auditCommand, detectedOS string) []auditCommand {
+	out := make([]auditCommand, 0, len(commands))
+	for _, cmd := range commands {
+		if _, ok := cmd.OSExec[detectedOS]; ok {
+			out = append(out, cmd)
 		}
 	}
-	return false
+	return out
+}
+
+func commandExecForOS(cmd auditCommand, detectedOS string) ([]string, error) {
+	if execValues, ok := cmd.OSExec[detectedOS]; ok {
+		return execValues, nil
+	}
+	return nil, fmt.Errorf("command %q is not available on %q (no os_exec target configured)", cmd.ID, detectedOS)
 }
 
 func runMenu(commands []auditCommand, detectedOS, repoRoot string) {
@@ -357,7 +357,7 @@ func runMenu(commands []auditCommand, detectedOS, repoRoot string) {
 
 		selected := commands[choice-1]
 		fmt.Printf("\nRunning: %s\n\n", selected.Display)
-		if code, err := runAuditCommand(repoRoot, selected, nil, false, nil); err != nil {
+		if code, err := runAuditCommand(repoRoot, selected, detectedOS, nil, false, nil); err != nil {
 			fmt.Printf("Command failed (exit %d): %v\n", code, err)
 		}
 
@@ -410,13 +410,18 @@ func promptRunAgain(reader *bufio.Reader) (bool, bool) {
 	return answer == "y" || answer == "yes", true
 }
 
-func runAuditCommand(repoRoot string, command auditCommand, passthrough []string, printRunMeta bool, captureMeta *latest.RunMeta) (int, error) {
-	targetPath, err := resolveCommandPath(repoRoot, command.Exec[0])
+func runAuditCommand(repoRoot string, command auditCommand, detectedOS string, passthrough []string, printRunMeta bool, captureMeta *latest.RunMeta) (int, error) {
+	execValues, err := commandExecForOS(command, detectedOS)
 	if err != nil {
 		return 1, err
 	}
 
-	args := append([]string{}, command.Exec[1:]...)
+	targetPath, err := resolveCommandPath(repoRoot, execValues[0])
+	if err != nil {
+		return 1, err
+	}
+
+	args := append([]string{}, execValues[1:]...)
 	args = append(args, passthrough...)
 
 	var runMetaPath string
@@ -481,7 +486,7 @@ func resolveCommandPath(repoRoot, manifestPath string) (string, error) {
 	return "", fmt.Errorf("command executable not found: %s", path)
 }
 
-func runSubcommand(commands []auditCommand, repoRoot string, args []string) int {
+func runSubcommand(commands []auditCommand, repoRoot, detectedOS string, args []string) int {
 	id, passthrough, printRunMeta, err := parseRunArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -495,8 +500,9 @@ func runSubcommand(commands []auditCommand, repoRoot string, args []string) int 
 		return 2
 	}
 
-	code, runErr := runAuditCommand(repoRoot, command, passthrough, printRunMeta, nil)
+	code, runErr := runAuditCommand(repoRoot, command, detectedOS, passthrough, printRunMeta, nil)
 	if runErr != nil {
+		fmt.Fprintln(os.Stderr, runErr)
 		return code
 	}
 	return 0
@@ -536,7 +542,7 @@ func printCommandList(commands []auditCommand) {
 	}
 }
 
-func runRunScheduled(commands []auditCommand, repoRoot string, args []string) int {
+func runRunScheduled(commands []auditCommand, repoRoot, detectedOS string, args []string) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "run-scheduled requires audit id")
 		printUsage()
@@ -558,8 +564,9 @@ func runRunScheduled(commands []auditCommand, repoRoot string, args []string) in
 	}
 
 	var meta latest.RunMeta
-	code, runErr := runAuditCommand(repoRoot, command, passthrough, true, &meta)
+	code, runErr := runAuditCommand(repoRoot, command, detectedOS, passthrough, true, &meta)
 	if runErr != nil {
+		fmt.Fprintln(os.Stderr, runErr)
 		return code
 	}
 	if meta.NDJSON == "" {
