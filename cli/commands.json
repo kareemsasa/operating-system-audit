@@ -1,1 +1,88 @@
-{"commands":[{"id":"full","os":["mac"],"display":"Full system audit","exec":["audit/mac/full-audit.sh"]},{"id":"full","os":["linux"],"display":"Full system audit","exec":["audit/linux/full-audit.sh"]},{"id":"storage","os":["mac"],"display":"Storage audit","exec":["audit/mac/storage.sh"]},{"id":"storage","os":["linux"],"display":"Storage audit","exec":["audit/linux/storage.sh"]},{"id":"network","os":["mac"],"display":"Network audit","exec":["audit/mac/network.sh"]},{"id":"network","os":["linux"],"display":"Network audit","exec":["audit/linux/network.sh"]},{"id":"identity","os":["mac"],"display":"Identity & access audit","exec":["audit/mac/identity.sh"]},{"id":"identity","os":["linux"],"display":"Identity & access audit","exec":["audit/linux/identity.sh"]},{"id":"config","os":["mac"],"display":"System configuration audit","exec":["audit/mac/config.sh"]},{"id":"config","os":["linux"],"display":"System configuration audit","exec":["audit/linux/config.sh"]},{"id":"execution","os":["mac"],"display":"Execution & processes audit","exec":["audit/mac/execution.sh"]},{"id":"execution","os":["linux"],"display":"Execution & processes audit","exec":["audit/linux/execution.sh"]},{"id":"persistence","os":["mac"],"display":"Persistence surfaces audit","exec":["audit/mac/persistence.sh"]},{"id":"persistence","os":["linux"],"display":"Persistence surfaces audit","exec":["audit/linux/persistence.sh"]}]}
+{
+  "commands": [
+    {
+      "id": "full",
+      "display": "Full system audit",
+      "os_exec": {
+        "mac": [
+          "audit/mac/full-audit.sh"
+        ],
+        "linux": [
+          "audit/linux/full-audit.sh"
+        ]
+      }
+    },
+    {
+      "id": "storage",
+      "display": "Storage audit",
+      "os_exec": {
+        "mac": [
+          "audit/mac/storage.sh"
+        ],
+        "linux": [
+          "audit/linux/storage.sh"
+        ]
+      }
+    },
+    {
+      "id": "network",
+      "display": "Network audit",
+      "os_exec": {
+        "mac": [
+          "audit/mac/network.sh"
+        ],
+        "linux": [
+          "audit/linux/network.sh"
+        ]
+      }
+    },
+    {
+      "id": "identity",
+      "display": "Identity & access audit",
+      "os_exec": {
+        "mac": [
+          "audit/mac/identity.sh"
+        ],
+        "linux": [
+          "audit/linux/identity.sh"
+        ]
+      }
+    },
+    {
+      "id": "config",
+      "display": "System configuration audit",
+      "os_exec": {
+        "mac": [
+          "audit/mac/config.sh"
+        ],
+        "linux": [
+          "audit/linux/config.sh"
+        ]
+      }
+    },
+    {
+      "id": "execution",
+      "display": "Execution & processes audit",
+      "os_exec": {
+        "mac": [
+          "audit/mac/execution.sh"
+        ],
+        "linux": [
+          "audit/linux/execution.sh"
+        ]
+      }
+    },
+    {
+      "id": "persistence",
+      "display": "Persistence surfaces audit",
+      "os_exec": {
+        "mac": [
+          "audit/mac/persistence.sh"
+        ],
+        "linux": [
+          "audit/linux/persistence.sh"
+        ]
+      }
+    }
+  ]
+}

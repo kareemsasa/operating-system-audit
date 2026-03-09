@@ -81,12 +81,31 @@ osaudit diff --baseline baseline.ndjson --current current.ndjson --ndjson
 
 Every audit produces a Markdown report. Pass `--ndjson` to also get machine-readable output for diffing and automation.
 
+## Command manifest
+
+`cli/commands.json` defines globally unique command IDs. Each command maps OS-specific executables in one place using `os_exec`.
+
+```json
+{
+  "commands": [
+    {
+      "id": "full",
+      "display": "Full system audit",
+      "os_exec": {
+        "mac": ["audit/mac/full-audit.sh"],
+        "linux": ["audit/linux/full-audit.sh"]
+      }
+    }
+  ]
+}
+```
+
 ## Platform support
 
 | Platform | Status    |
 | -------- | --------- |
 | macOS    | Supported |
-| Linux    | Planned   |
+| Linux    | Supported |
 | Windows  | Planned   |
 
 ## Design

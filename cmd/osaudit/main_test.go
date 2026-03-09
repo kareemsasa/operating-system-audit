@@ -22,17 +22,29 @@ func TestValidateManifest(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
+		name     string
 		repoRoot string
-		m       manifest
-		wantErr string
+		m        manifest
+		wantErr  string
 	}{
 		{
 			name:     "valid manifest",
 			repoRoot: tmp,
 			m: manifest{
 				Commands: []auditCommand{
-					{ID: "valid", OS: []string{"mac"}, Display: "Valid", Exec: []string{"audit/mac/script.sh"}},
+					{ID: "valid", Display: "Valid", OSExec: map[string][]string{"mac": []string{"audit/mac/script.sh"}}},
+				},
+			},
+		},
+		{
+			name:     "valid single command with mac and linux targets",
+			repoRoot: tmp,
+			m: manifest{
+				Commands: []auditCommand{
+					{ID: "full", Display: "Full", OSExec: map[string][]string{
+						"mac":   []string{"audit/mac/script.sh"},
+						"linux": []string{"audit/mac/script.sh"},
+					}},
 				},
 			},
 		},
@@ -41,7 +53,7 @@ func TestValidateManifest(t *testing.T) {
 			repoRoot: tmp,
 			m: manifest{
 				Commands: []auditCommand{
-					{ID: "", OS: []string{"mac"}, Display: "X", Exec: []string{"audit/mac/script.sh"}},
+					{ID: "", Display: "X", OSExec: map[string][]string{"mac": []string{"audit/mac/script.sh"}}},
 				},
 			},
 			wantErr: "id is required",
@@ -51,8 +63,8 @@ func TestValidateManifest(t *testing.T) {
 			repoRoot: tmp,
 			m: manifest{
 				Commands: []auditCommand{
-					{ID: "dup", OS: []string{"mac"}, Display: "A", Exec: []string{"audit/mac/script.sh"}},
-					{ID: "dup", OS: []string{"mac"}, Display: "B", Exec: []string{"audit/mac/script.sh"}},
+					{ID: "dup", Display: "A", OSExec: map[string][]string{"mac": []string{"audit/mac/script.sh"}}},
+					{ID: "dup", Display: "B", OSExec: map[string][]string{"linux": []string{"audit/mac/script.sh"}}},
 				},
 			},
 			wantErr: "duplicate id",
@@ -62,27 +74,37 @@ func TestValidateManifest(t *testing.T) {
 			repoRoot: tmp,
 			m: manifest{
 				Commands: []auditCommand{
-					{ID: "x", OS: []string{"solaris"}, Display: "X", Exec: []string{"audit/mac/script.sh"}},
+					{ID: "x", Display: "X", OSExec: map[string][]string{"solaris": []string{"audit/mac/script.sh"}}},
 				},
 			},
-			wantErr: "unsupported value",
+			wantErr: "unsupported OS key",
 		},
 		{
-			name:     "missing exec",
+			name:     "missing os_exec targets",
 			repoRoot: tmp,
 			m: manifest{
 				Commands: []auditCommand{
-					{ID: "x", OS: []string{"mac"}, Display: "X", Exec: []string{}},
+					{ID: "x", Display: "X", OSExec: map[string][]string{}},
 				},
 			},
-			wantErr: "exec must contain at least one value",
+			wantErr: "os_exec must contain at least one target",
+		},
+		{
+			name:     "empty os_exec {} fails validation",
+			repoRoot: tmp,
+			m: manifest{
+				Commands: []auditCommand{
+					{ID: "empty", Display: "Empty", OSExec: map[string][]string{}},
+				},
+			},
+			wantErr: "os_exec must contain at least one target",
 		},
 		{
 			name:     "non-existent exec path",
 			repoRoot: tmp,
 			m: manifest{
 				Commands: []auditCommand{
-					{ID: "x", OS: []string{"mac"}, Display: "X", Exec: []string{"audit/mac/nonexistent.sh"}},
+					{ID: "x", Display: "X", OSExec: map[string][]string{"mac": []string{"audit/mac/nonexistent.sh"}}},
 				},
 			},
 			wantErr: "does not exist",
@@ -115,13 +137,13 @@ func TestValidateManifest(t *testing.T) {
 
 func TestParseRunArgs(t *testing.T) {
 	tests := []struct {
-		name         string
-		args         []string
-		wantID       string
-		wantPass     []string
+		name          string
+		args          []string
+		wantID        string
+		wantPass      []string
 		wantPrintMeta bool
-		wantErr      bool
-		wantErrMsg   string
+		wantErr       bool
+		wantErrMsg    string
 	}{
 		{"no args (error)", []string{}, "", nil, false, true, "missing command id"},
 		{"id only", []string{"full"}, "full", nil, false, false, ""},
@@ -165,8 +187,8 @@ func TestDetectOS(t *testing.T) {
 		t.Fatalf("detectOS() = %v", err)
 	}
 	want := map[string]string{
-		"darwin": "mac",
-		"linux":  "linux",
+		"darwin":  "mac",
+		"linux":   "linux",
 		"windows": "windows",
 	}
 	if expected, ok := want[runtime.GOOS]; ok {
@@ -178,23 +200,88 @@ func TestDetectOS(t *testing.T) {
 	}
 }
 
-func TestCommandSupportsOS(t *testing.T) {
+func TestCommandsForCurrentOS(t *testing.T) {
+	macLinux := auditCommand{ID: "both", Display: "Both", OSExec: map[string][]string{"mac": []string{"a.sh"}, "linux": []string{"b.sh"}}}
+	linuxOnly := auditCommand{ID: "linux-only", Display: "Linux", OSExec: map[string][]string{"linux": []string{"b.sh"}}}
+	macOnly := auditCommand{ID: "mac-only", Display: "Mac", OSExec: map[string][]string{"mac": []string{"a.sh"}}}
+
+	tests := []struct {
+		name       string
+		commands   []auditCommand
+		detectedOS string
+		wantIDs    []string
+	}{
+		{
+			name:       "mac sees mac-supported only",
+			commands:   []auditCommand{macLinux, linuxOnly, macOnly},
+			detectedOS: "mac",
+			wantIDs:    []string{"both", "mac-only"},
+		},
+		{
+			name:       "linux sees linux-supported only",
+			commands:   []auditCommand{macLinux, linuxOnly, macOnly},
+			detectedOS: "linux",
+			wantIDs:    []string{"both", "linux-only"},
+		},
+		{
+			name:       "empty list when no support",
+			commands:   []auditCommand{macOnly, linuxOnly},
+			detectedOS: "windows",
+			wantIDs:    []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commandsForCurrentOS(tt.commands, tt.detectedOS)
+			gotIDs := make([]string, len(got))
+			for i := range got {
+				gotIDs[i] = got[i].ID
+			}
+			if !sliceEqual(gotIDs, tt.wantIDs) {
+				t.Errorf("commandsForCurrentOS() = %v, want %v", gotIDs, tt.wantIDs)
+			}
+		})
+	}
+}
+
+func TestCommandExecForOS(t *testing.T) {
 	tests := []struct {
 		name       string
 		cmd        auditCommand
 		detectedOS string
-		want       bool
+		want       []string
+		wantErr    string
 	}{
-		{"match", auditCommand{OS: []string{"mac"}}, "mac", true},
-		{"no match", auditCommand{OS: []string{"mac"}}, "linux", false},
-		{"multi-OS entries", auditCommand{OS: []string{"mac", "linux"}}, "linux", true},
-		{"multi-OS first", auditCommand{OS: []string{"mac", "linux"}}, "mac", true},
+		{
+			name:       "run full resolves correctly on mac",
+			cmd:        auditCommand{ID: "full", OSExec: map[string][]string{"mac": []string{"audit/mac/full-audit.sh"}, "linux": []string{"audit/linux/full-audit.sh"}}},
+			detectedOS: "mac",
+			want:       []string{"audit/mac/full-audit.sh"},
+		},
+		{
+			name:       "missing current-OS exec fails cleanly",
+			cmd:        auditCommand{ID: "full", OSExec: map[string][]string{"linux": []string{"audit/linux/full-audit.sh"}}},
+			detectedOS: "mac",
+			wantErr:    `command "full" is not available on "mac"`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := commandSupportsOS(tt.cmd, tt.detectedOS)
-			if got != tt.want {
-				t.Errorf("commandSupportsOS(%v, %q) = %v, want %v", tt.cmd, tt.detectedOS, got, tt.want)
+			got, err := commandExecForOS(tt.cmd, tt.detectedOS)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("commandExecForOS() = %v, want error containing %q", got, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("commandExecForOS() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("commandExecForOS() error = %v", err)
+			}
+			if !sliceEqual(got, tt.want) {
+				t.Errorf("commandExecForOS() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -215,29 +302,29 @@ func TestLoadCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	validManifest := `{"commands":[{"id":"mac-only","os":["mac"],"display":"Mac","exec":["audit/mac/script.sh"]},{"id":"linux-only","os":["linux"],"display":"Linux","exec":["audit/mac/script.sh"]}]}`
+	validManifest := `{"commands":[{"id":"mac-linux","display":"Mac/Linux","os_exec":{"mac":["audit/mac/script.sh"],"linux":["audit/mac/script.sh"]}},{"id":"linux-only","display":"Linux","os_exec":{"linux":["audit/mac/script.sh"]}}]}`
 
 	tests := []struct {
-		name        string
+		name         string
 		manifestPath string
-		detectedOS  string
-		wantCount   int
-		wantErr     bool
-		wantErrMsg  string
-		setup       func() // optional setup, e.g. write manifest
+		detectedOS   string
+		wantCount    int
+		wantErr      bool
+		wantErrMsg   string
+		setup        func() // optional setup, e.g. write manifest
 	}{
 		{
 			name:         "filtering by OS mac",
 			manifestPath: filepath.Join(cliDir, "commands.json"),
-			detectedOS:   "mac",
-			wantCount:    1,
+			detectedOS:   "mac", // kept for table compatibility; loadCommands no longer filters
+			wantCount:    2,
 			setup:        func() { os.WriteFile(filepath.Join(tmp, "cli", "commands.json"), []byte(validManifest), 0o644) },
 		},
 		{
 			name:         "filtering by OS linux",
 			manifestPath: filepath.Join(cliDir, "commands.json"),
-			detectedOS:   "linux",
-			wantCount:    1,
+			detectedOS:   "linux", // kept for table compatibility; loadCommands no longer filters
+			wantCount:    2,
 			setup:        func() { os.WriteFile(filepath.Join(tmp, "cli", "commands.json"), []byte(validManifest), 0o644) },
 		},
 		{
@@ -255,13 +342,21 @@ func TestLoadCommands(t *testing.T) {
 			wantErrMsg:   "failed to parse manifest",
 			setup:        func() { os.WriteFile(filepath.Join(tmp, "cli", "commands.json"), []byte("{invalid}"), 0o644) },
 		},
+		{
+			name:         "empty os_exec {} fails load validation",
+			manifestPath: filepath.Join(cliDir, "commands.json"),
+			detectedOS:   "mac",
+			wantErr:      true,
+			wantErrMsg:   "os_exec must contain at least one target",
+			setup:        func() { os.WriteFile(filepath.Join(tmp, "cli", "commands.json"), []byte(`{"commands":[{"id":"x","display":"X","os_exec":{}}]}`), 0o644) },
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup()
 			}
-			cmds, err := loadCommands(tt.manifestPath, tt.detectedOS)
+			cmds, err := loadCommands(tt.manifestPath)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("loadCommands() = %d commands, nil; want error containing %q", len(cmds), tt.wantErrMsg)
@@ -346,10 +441,7 @@ func TestRunPrintRunMeta(t *testing.T) {
 		}
 	}
 	root := cwd
-	bin := filepath.Join(root, "dist", "osaudit")
-	if _, err := os.Stat(bin); err != nil {
-		t.Skipf("dist/osaudit not built: %v (run: go build -o dist/osaudit ./cmd/osaudit)", err)
-	}
+	bin := buildOSAuditBinary(t, root)
 
 	cmd := exec.Command(bin, "run", "execution", "--print-run-meta", "--", "--ndjson", "--redact-all")
 	cmd.Dir = root
@@ -395,6 +487,65 @@ func TestRunPrintRunMeta(t *testing.T) {
 	}
 }
 
+// TestListAndRun_UnsupportedOS verifies: list shows only supported commands;
+// run of a command with no current-OS exec fails with a clear error.
+func TestListAndRun_UnsupportedOS(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("audit scripts only exist for linux/mac")
+	}
+	cwd, _ := os.Getwd()
+	for d := cwd; d != ""; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			cwd = d
+			break
+		}
+	}
+	bin := buildOSAuditBinary(t, cwd)
+
+	tmp := t.TempDir()
+	cliDir := filepath.Join(tmp, "cli")
+	os.MkdirAll(cliDir, 0o755)
+	auditDir := filepath.Join(tmp, "audit", "mac")
+	os.MkdirAll(auditDir, 0o755)
+	os.WriteFile(filepath.Join(auditDir, "script.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755)
+
+	// Manifest: full (mac+linux), linux-only (linux only)
+	manifest := `{"commands":[{"id":"full","display":"Full","os_exec":{"mac":["audit/mac/script.sh"],"linux":["audit/mac/script.sh"]}},{"id":"linux-only","display":"Linux only","os_exec":{"linux":["audit/mac/script.sh"]}}]}`
+	os.WriteFile(filepath.Join(cliDir, "commands.json"), []byte(manifest), 0o644)
+
+	osName := "mac"
+	if runtime.GOOS == "linux" {
+		osName = "linux"
+	}
+
+	// list: on mac, linux-only must not appear; on linux, both appear
+	listCmd := exec.Command(bin, "list")
+	listCmd.Dir = tmp
+	listCmd.Env = append(os.Environ(), "OSAUDIT_ROOT="+tmp)
+	listOut, err := listCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("osaudit list failed: %v\n%s", err, listOut)
+	}
+	listStr := string(listOut)
+	if osName == "mac" && strings.Contains(listStr, "linux-only") {
+		t.Errorf("list on mac should not show linux-only command, got:\n%s", listStr)
+	}
+
+	// run linux-only on mac: must fail with clear error
+	if osName == "mac" {
+		runCmd := exec.Command(bin, "run", "linux-only")
+		runCmd.Dir = tmp
+		runCmd.Env = append(os.Environ(), "OSAUDIT_ROOT="+tmp)
+		var stderr strings.Builder
+		runCmd.Stderr = &stderr
+		_ = runCmd.Run()
+		errStr := stderr.String()
+		if !strings.Contains(errStr, `command "linux-only" is not available on "mac"`) {
+			t.Errorf("run linux-only on mac should fail with clear error, got stderr:\n%s", errStr)
+		}
+	}
+}
+
 // TestRunPrintRunMeta_NoJSONOnFailure verifies no JSON is printed when script fails.
 func TestRunPrintRunMeta_NoJSONOnFailure(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
@@ -407,10 +558,7 @@ func TestRunPrintRunMeta_NoJSONOnFailure(t *testing.T) {
 			break
 		}
 	}
-	bin := filepath.Join(cwd, "dist", "osaudit")
-	if _, err := os.Stat(bin); err != nil {
-		t.Skipf("dist/osaudit not built: %v", err)
-	}
+	bin := buildOSAuditBinary(t, cwd)
 
 	// Use unknown command id so run fails before script executes
 	cmd := exec.Command(bin, "run", "nonexistent-id", "--print-run-meta", "--", "--ndjson")
@@ -426,4 +574,16 @@ func TestRunPrintRunMeta_NoJSONOnFailure(t *testing.T) {
 	if out != "" {
 		t.Errorf("stdout should be empty on failure, got: %s", out)
 	}
+}
+
+func buildOSAuditBinary(t *testing.T, root string) string {
+	t.Helper()
+
+	bin := filepath.Join(t.TempDir(), "osaudit-test-bin")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/osaudit")
+	build.Dir = root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build osaudit binary: %v\n%s", err, string(out))
+	}
+	return bin
 }
