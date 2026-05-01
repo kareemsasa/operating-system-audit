@@ -114,6 +114,10 @@ Read-only — nothing is deleted, modified, or moved. Reports are deterministic 
 
 Architecture: Go CLI dispatches to per-OS Bash collectors. The diff engine and subcommand routing are pure Go.
 
+## Roadmap
+
+Planned work is grouped by product area in [docs/roadmap.md](docs/roadmap.md).
+
 ## License
 
 [MIT](LICENSE)
