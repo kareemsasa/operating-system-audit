@@ -12,3 +12,5 @@ output/*
 
 # OS junk
 .DS_Store
+
+.local/
