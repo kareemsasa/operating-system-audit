@@ -255,6 +255,292 @@ count_lines() {
     echo "${n:-0}"
 }
 
+filter_dns_server_tokens() {
+    awk '
+        function clean_token(t) {
+            gsub(/^[\[,]+/, "", t)
+            gsub(/[\],]+$/, "", t)
+            return t
+        }
+        function is_ipv4(t) {
+            return t ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/
+        }
+        function is_ipv6(t) {
+            return t ~ /^[0-9A-Fa-f:.]+(%[A-Za-z0-9_.-]+)?$/ && t ~ /:/ && t !~ /:$/
+        }
+        {
+            for (i = 1; i <= NF; i++) {
+                token = clean_token($i)
+                if (is_ipv4(token) || is_ipv6(token)) {
+                    print token
+                }
+            }
+        }
+    '
+}
+
+parse_ss_listening_tcp() {
+    awk '
+        function port_from_local(local, p) {
+            p = local
+            if (p ~ /\]:[0-9]+$/) {
+                sub(/^.*\]:/, "", p)
+            } else {
+                sub(/^.*:/, "", p)
+            }
+            return p
+        }
+        {
+            port = port_from_local($4)
+            if (port !~ /^[0-9]+$/) {
+                next
+            }
+
+            proc = "unknown"
+            pid = "0"
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /users:\(\(/) {
+                    proc = $i
+                    gsub(/.*users:\(\("/, "", proc)
+                    gsub(/".*/, "", proc)
+
+                    pid = $i
+                    gsub(/.*pid=/, "", pid)
+                    gsub(/,.*/, "", pid)
+                }
+            }
+            if (pid !~ /^[0-9]+$/) {
+                pid = "0"
+            }
+            printf "%s\t%s\t%s\n", proc, pid, port
+        }
+    '
+}
+
+_systemctl_any_enabled() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local unit
+    for unit in "$@"; do
+        systemctl is-enabled --quiet "$unit" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+_systemctl_any_active() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local unit
+    for unit in "$@"; do
+        systemctl is-active --quiet "$unit" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+_linux_firewall_record_backend() {
+    local backend="$1"
+    local service_enabled="$2"
+    local service_active="$3"
+    local rules_active="$4"
+
+    if [ -z "${FIREWALL_BACKENDS:-}" ]; then
+        FIREWALL_BACKENDS="$backend"
+    else
+        FIREWALL_BACKENDS="${FIREWALL_BACKENDS},${backend}"
+    fi
+
+    if [ "$service_enabled" = true ]; then FIREWALL_SERVICE_ENABLED=true; fi
+    if [ "$service_active" = true ]; then FIREWALL_SERVICE_ACTIVE=true; fi
+    if [ "$rules_active" = true ]; then FIREWALL_RULES_ACTIVE=true; fi
+
+    local current_rank=0
+    local candidate_rank=1
+    [ "${FIREWALL_PRIMARY_SERVICE_ENABLED:-false}" = true ] && current_rank=2
+    [ "${FIREWALL_PRIMARY_SERVICE_ACTIVE:-false}" = true ] && current_rank=3
+    [ "${FIREWALL_PRIMARY_RULES_ACTIVE:-false}" = true ] && current_rank=4
+    [ "$service_enabled" = true ] && candidate_rank=2
+    [ "$service_active" = true ] && candidate_rank=3
+    [ "$rules_active" = true ] && candidate_rank=4
+
+    if [ "${FIREWALL_BACKEND:-unknown}" = "unknown" ] || [ "$candidate_rank" -gt "$current_rank" ]; then
+        FIREWALL_BACKEND="$backend"
+        FIREWALL_PRIMARY_SERVICE_ENABLED="$service_enabled"
+        FIREWALL_PRIMARY_SERVICE_ACTIVE="$service_active"
+        FIREWALL_PRIMARY_RULES_ACTIVE="$rules_active"
+    fi
+}
+
+detect_linux_firewall_status() {
+    local probe_prefix="${1:-linux}"
+    FIREWALL_BACKEND="unknown"
+    FIREWALL_BACKENDS=""
+    FIREWALL_SERVICE_ENABLED=false
+    FIREWALL_SERVICE_ACTIVE=false
+    FIREWALL_RULES_ACTIVE=false
+    FIREWALL_PRIMARY_SERVICE_ENABLED=false
+    FIREWALL_PRIMARY_SERVICE_ACTIVE=false
+    FIREWALL_PRIMARY_RULES_ACTIVE=false
+
+    if command -v ufw >/dev/null 2>&1; then
+        local ufw_out ufw_service_enabled=false ufw_service_active=false ufw_rules_active=false
+        ufw_out="$(soft_out_probe "${probe_prefix}.ufw_status" ufw status 2>/dev/null)"
+        _systemctl_any_enabled ufw ufw.service && ufw_service_enabled=true
+        _systemctl_any_active ufw ufw.service && ufw_service_active=true
+        echo "$ufw_out" | grep -Eqi '^Status:[[:space:]]+active' && ufw_rules_active=true
+        _linux_firewall_record_backend "ufw" "$ufw_service_enabled" "$ufw_service_active" "$ufw_rules_active"
+    fi
+
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        local fw_state firewalld_service_enabled=false firewalld_service_active=false firewalld_rules_active=false
+        fw_state="$(soft_out_probe "${probe_prefix}.firewalld_state" firewall-cmd --state 2>/dev/null)"
+        _systemctl_any_enabled firewalld firewalld.service && firewalld_service_enabled=true
+        if echo "$fw_state" | grep -qi "running"; then
+            firewalld_service_active=true
+            firewalld_rules_active=true
+        elif _systemctl_any_active firewalld firewalld.service; then
+            firewalld_service_active=true
+        fi
+        _linux_firewall_record_backend "firewalld" "$firewalld_service_enabled" "$firewalld_service_active" "$firewalld_rules_active"
+    fi
+
+    if command -v nft >/dev/null 2>&1; then
+        local nft_out nft_service_enabled=false nft_service_active=false nft_rules_active=false
+        nft_out="$(soft_out_probe "${probe_prefix}.nft_list" nft list ruleset 2>/dev/null)"
+        _systemctl_any_enabled nftables nftables.service && nft_service_enabled=true
+        _systemctl_any_active nftables nftables.service && nft_service_active=true
+        [ -n "$nft_out" ] && nft_rules_active=true
+        _linux_firewall_record_backend "nftables" "$nft_service_enabled" "$nft_service_active" "$nft_rules_active"
+    fi
+
+    if command -v iptables >/dev/null 2>&1; then
+        local ipt_rules ip6t_rules iptables_service_enabled=false iptables_service_active=false iptables_rules_active=false
+        ipt_rules="$(soft_out_probe "${probe_prefix}.iptables_rules" iptables -S 2>/dev/null | awk '$1 == "-A" {c++} END {print c+0}')"
+        ip6t_rules=0
+        if command -v ip6tables >/dev/null 2>&1; then
+            ip6t_rules="$(soft_out_probe "${probe_prefix}.ip6tables_rules" ip6tables -S 2>/dev/null | awk '$1 == "-A" {c++} END {print c+0}')"
+        fi
+        _systemctl_any_enabled iptables iptables.service netfilter-persistent netfilter-persistent.service && iptables_service_enabled=true
+        _systemctl_any_active iptables iptables.service netfilter-persistent netfilter-persistent.service && iptables_service_active=true
+        if [ "${ipt_rules:-0}" -gt 0 ] 2>/dev/null || [ "${ip6t_rules:-0}" -gt 0 ] 2>/dev/null; then
+            iptables_rules_active=true
+        fi
+        _linux_firewall_record_backend "iptables" "$iptables_service_enabled" "$iptables_service_active" "$iptables_rules_active"
+    fi
+}
+
+emit_run_context() {
+    [ -n "$NDJSON_FILE" ] || return 0
+    local container=false
+    local sandbox="host"
+    local virt="none"
+    local interactive=false
+    local systemd_available=false
+    local euid="${EUID:-$(id -u 2>/dev/null || echo 0)}"
+
+    if [ -f /.dockerenv ]; then
+        container=true
+    fi
+    if [ -r /proc/1/cgroup ] && grep -qaE '(docker|kubepods|containerd|libpod|lxc)' /proc/1/cgroup 2>/dev/null; then
+        container=true
+    fi
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        virt="$(systemd-detect-virt 2>/dev/null || true)"
+        virt="${virt:-none}"
+        if systemd-detect-virt --container --quiet >/dev/null 2>&1; then
+            container=true
+        fi
+    fi
+    if [ "$container" = true ]; then
+        sandbox="container"
+    elif [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CODESPACES:-}" ] || [ -n "${OSAUDIT_SANDBOX:-}" ]; then
+        sandbox="automation"
+    fi
+    if [ -t 0 ] && [ -t 1 ]; then
+        interactive=true
+    fi
+    command -v systemctl >/dev/null 2>&1 && systemd_available=true
+
+    append_ndjson_line "{\"type\":\"run_context\",\"run_id\":$(json_escape "$RUN_ID"),\"sandbox\":$(json_escape "$sandbox"),\"container\":$container,\"virt\":$(json_escape "$virt"),\"interactive\":$interactive,\"euid\":${euid:-0},\"user\":$(json_escape "$CURRENT_USER"),\"systemd_available\":$systemd_available}"
+}
+
+emit_soft_failure_warning_details() {
+    local log_file="$1"
+    local max_items="${2:-10}"
+    [ -f "$log_file" ] || return 1
+
+    local soft_failures
+    soft_failures=$(wc -l < "$log_file" | tr -d ' ' || true)
+    soft_failures=${soft_failures:-0}
+    (( soft_failures > 0 )) || return 1
+
+    report_append "- **Soft probe warnings:** $soft_failures"
+    report_append ""
+    report_append "### Soft Probe Warning Details"
+
+    local details_json=""
+    local count detail item_json
+    while IFS=$'\t' read -r count detail; do
+        [ -n "$detail" ] || continue
+        report_append "- \`${detail}\` (${count}x)"
+        item_json="{\"count\":${count:-0},\"detail\":$(json_escape "$detail")}"
+        if [ -z "$details_json" ]; then
+            details_json="$item_json"
+        else
+            details_json="${details_json},${item_json}"
+        fi
+    done < <(sort "$log_file" | uniq -c | sort -rn | sed -n "1,${max_items}p" | awk '{count=$1; sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); print count "\t" substr($0, 1, 200)}')
+
+    if [ -n "$NDJSON_FILE" ]; then
+        append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"soft_failures\":${soft_failures:-0},\"details\":[${details_json}]}"
+    fi
+    return 0
+}
+
+emit_probe_failure_warning_details() {
+    local pf_file="${1:-${PROBE_FAILURES_FILE:-$(dirname "$REPORT_FILE")/.probe-failures-$$.tmp}}"
+    [ -f "$pf_file" ] || return 1
+
+    local grouped_tmp
+    grouped_tmp=$(mktemp -t audit_probe_warning_details.XXXXXX 2>/dev/null)
+    _common_register_tmp "$grouped_tmp"
+
+    awk -F '\t' '
+        NF >= 3 && $1 != "" { counts[$1]++ }
+        END {
+            for (probe in counts) {
+                print counts[probe] "\t" probe
+            }
+        }
+    ' "$pf_file" | sort -t $'\t' -k2,2 > "$grouped_tmp"
+
+    [ -s "$grouped_tmp" ] || return 1
+
+    local soft_failures
+    soft_failures=$(awk -F '\t' '{sum += $1} END {print sum + 0}' "$grouped_tmp")
+    soft_failures=${soft_failures:-0}
+    (( soft_failures > 0 )) || return 1
+
+    report_append "- **Soft probe warnings:** $soft_failures"
+    report_append ""
+    report_append "### Soft Probe Warning Details"
+
+    local details_json=""
+    local count probe item_json
+    while IFS=$'\t' read -r count probe; do
+        [ -n "$probe" ] || continue
+        report_append "- \`${probe}\` (${count}x)"
+        item_json="{\"probe\":$(json_escape "$probe"),\"detail\":$(json_escape "$probe"),\"count\":${count:-0}}"
+        if [ -z "$details_json" ]; then
+            details_json="$item_json"
+        else
+            details_json="${details_json},${item_json}"
+        fi
+    done < "$grouped_tmp"
+
+    if [ -n "$NDJSON_FILE" ]; then
+        append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"soft_failures\":${soft_failures:-0},\"details\":[${details_json}]}"
+    fi
+    return 0
+}
+
 record_soft_failure() {
     [ -n "${SOFT_FAILURE_LOG:-}" ] || return 0
     echo "${1:-probe_failed}" >> "$SOFT_FAILURE_LOG"

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -348,7 +349,9 @@ func TestLoadCommands(t *testing.T) {
 			detectedOS:   "mac",
 			wantErr:      true,
 			wantErrMsg:   "os_exec must contain at least one target",
-			setup:        func() { os.WriteFile(filepath.Join(tmp, "cli", "commands.json"), []byte(`{"commands":[{"id":"x","display":"X","os_exec":{}}]}`), 0o644) },
+			setup: func() {
+				os.WriteFile(filepath.Join(tmp, "cli", "commands.json"), []byte(`{"commands":[{"id":"x","display":"X","os_exec":{}}]}`), 0o644)
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -573,6 +576,110 @@ func TestRunPrintRunMeta_NoJSONOnFailure(t *testing.T) {
 	out := strings.TrimSpace(stdout.String())
 	if out != "" {
 		t.Errorf("stdout should be empty on failure, got: %s", out)
+	}
+}
+
+func TestLinuxProbeFailureWarningDetailsUseSummarySource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash helper test requires a Unix shell")
+	}
+	cwd, _ := os.Getwd()
+	for d := cwd; d != ""; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			cwd = d
+			break
+		}
+	}
+
+	tmp := t.TempDir()
+	reportPath := filepath.Join(tmp, "report.md")
+	ndjsonPath := filepath.Join(tmp, "out.ndjson")
+	softLogPath := filepath.Join(tmp, "soft.log")
+	probeFailuresPath := filepath.Join(tmp, "probe-failures.tsv")
+
+	probes := []string{
+		"config.dmsetup_crypt",
+		"config.firewalld_state",
+		"config.iptables_rules",
+		"config.nft_list",
+		"execution.ps_aux",
+		"identity.sudo_check",
+		"network.firewalld_state",
+		"network.ip_brief_addr",
+		"network.iptables_rules",
+		"network.nft_list",
+		"network.resolvectl_dns",
+		"storage.find_large_files",
+	}
+	var pf strings.Builder
+	for i, probe := range probes {
+		pf.WriteString(probe)
+		pf.WriteString("\t")
+		pf.WriteString(strconv.Itoa(1700000000000 + i))
+		pf.WriteString("\t1\n")
+	}
+	if err := os.WriteFile(probeFailuresPath, []byte(pf.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(softLogPath, []byte("intentionally incomplete\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	commonPath := filepath.Join(cwd, "audit", "linux", "lib", "common.sh")
+	cmd := exec.Command("bash", "-c", `source "$1"; : > "$REPORT_FILE"; : > "$NDJSON_FILE"; emit_probe_failure_warning_details "$PROBE_FAILURES_FILE"`, "bash", commonPath)
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(),
+		"AUDIT_INIT_LOADED=1",
+		"NO_COLOR=true",
+		"NDJSON_FILE="+ndjsonPath,
+		"RUN_ID=test-run",
+		"REPORT_FILE="+reportPath,
+		"SOFT_FAILURE_LOG="+softLogPath,
+		"PROBE_FAILURES_FILE="+probeFailuresPath,
+		"REDACT_PATHS=false",
+		"REDACT_ALL=false",
+		"HOME_DIR=/home/kareem",
+		"CURRENT_USER=kareem",
+		"HOSTNAME_VAL=test-host",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("emit_probe_failure_warning_details failed: %v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(ndjsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row struct {
+		Type         string `json:"type"`
+		SoftFailures int    `json:"soft_failures"`
+		Details      []struct {
+			Probe string `json:"probe"`
+			Count int    `json:"count"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &row); err != nil {
+		t.Fatalf("warning row is not valid JSON: %v\n%s", err, data)
+	}
+	if row.Type != "warning" {
+		t.Fatalf("type = %q, want warning", row.Type)
+	}
+	detailSum := 0
+	found := map[string]bool{}
+	for _, detail := range row.Details {
+		detailSum += detail.Count
+		found[detail.Probe] = true
+	}
+	if row.SoftFailures != detailSum {
+		t.Fatalf("soft_failures=%d detail_sum=%d", row.SoftFailures, detailSum)
+	}
+	if len(row.Details) != len(probes) {
+		t.Fatalf("details length = %d, want %d", len(row.Details), len(probes))
+	}
+	for _, probe := range []string{"config.dmsetup_crypt", "config.firewalld_state"} {
+		if !found[probe] {
+			t.Fatalf("details missing %s", probe)
+		}
 	}
 }
 

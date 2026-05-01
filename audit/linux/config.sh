@@ -79,6 +79,7 @@ config_init_ndjson_if_needed() {
     fi
     : > "$NDJSON_FILE"
     append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"config-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
+    emit_run_context
     CONFIG_NDJSON_INITIALIZED=true
 }
 
@@ -86,6 +87,9 @@ run_config_audit() {
     local luks_encrypted=false
     local secure_boot=false
     local firewall=false
+    local firewall_service_enabled=false
+    local firewall_service_active=false
+    local firewall_rules_active=false
     local mac_framework="none"
     local profile_files_count=0
 
@@ -117,36 +121,17 @@ run_config_audit() {
     fi
     report_append "- Secure Boot: **$secure_boot**"
 
-    # Firewall (detect backend)
+    # Firewall (separate service state from active rules)
     firewall_backend="unknown"
-    if command -v ufw >/dev/null 2>&1; then
-        ufw_out="$(soft_out_probe "config.ufw_status" ufw status 2>/dev/null)"
-        if echo "$ufw_out" | grep -qi "active"; then
-            firewall=true
-            firewall_backend="ufw"
-        fi
-    fi
-    if [ "$firewall_backend" = "unknown" ] && command -v firewall-cmd >/dev/null 2>&1; then
-        if soft_out_probe "config.firewalld_state" firewall-cmd --state 2>/dev/null | grep -qi "running"; then
-            firewall=true
-            firewall_backend="firewalld"
-        fi
-    fi
-    if [ "$firewall_backend" = "unknown" ] && command -v nft >/dev/null 2>&1; then
-        nft_out="$(soft_out_probe "config.nft_list" nft list ruleset 2>/dev/null)"
-        if [ -n "$nft_out" ]; then
-            firewall=true
-            firewall_backend="nftables"
-        fi
-    fi
-    if [ "$firewall_backend" = "unknown" ] && command -v iptables >/dev/null 2>&1; then
-        ipt_rules="$(soft_out_probe "config.iptables_list" iptables -L -n 2>/dev/null | awk 'NR>2 {c++} END{print c+0}')"
-        if [ "${ipt_rules:-0}" -gt 0 ] 2>/dev/null; then
-            firewall=true
-            firewall_backend="iptables"
-        fi
-    fi
-    report_append "- Firewall enabled: **$firewall**"
+    detect_linux_firewall_status "config"
+    firewall_backend="$FIREWALL_BACKEND"
+    firewall_service_enabled="$FIREWALL_SERVICE_ENABLED"
+    firewall_service_active="$FIREWALL_SERVICE_ACTIVE"
+    firewall_rules_active="$FIREWALL_RULES_ACTIVE"
+    firewall="$firewall_rules_active"
+    report_append "- Firewall service enabled: **$firewall_service_enabled**"
+    report_append "- Firewall service active: **$firewall_service_active**"
+    report_append "- Firewall rules active: **$firewall_rules_active**"
     report_append "- Firewall backend: **$firewall_backend**"
 
     # SSH daemon
@@ -190,7 +175,7 @@ run_config_audit() {
     fi
     report_append "- Auto updates: **$auto_updates**"
 
-    append_ndjson_line "{\"type\":\"security_config\",\"run_id\":$(json_escape "$RUN_ID"),\"luks_encrypted\":$luks_encrypted,\"secure_boot\":$secure_boot,\"firewall\":$firewall,\"firewall_backend\":$(json_escape "$firewall_backend"),\"mac_framework\":$(json_escape "$mac_framework")}"
+    append_ndjson_line "{\"type\":\"security_config\",\"run_id\":$(json_escape "$RUN_ID"),\"luks_encrypted\":$luks_encrypted,\"secure_boot\":$secure_boot,\"firewall\":$firewall,\"firewall_service_enabled\":$firewall_service_enabled,\"firewall_service_active\":$firewall_service_active,\"firewall_rules_active\":$firewall_rules_active,\"firewall_backend\":$(json_escape "$firewall_backend"),\"firewall_backends\":$(json_escape "${FIREWALL_BACKENDS:-}"),\"mac_framework\":$(json_escape "$mac_framework")}"
     section_end_ms=$(now_ms)
     emit_timing "security_defaults" "$section_start_ms" "$section_end_ms"
 

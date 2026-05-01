@@ -79,6 +79,7 @@ network_init_ndjson_if_needed() {
     fi
     : > "$NDJSON_FILE"
     append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"network-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
+    emit_run_context
     NETWORK_NDJSON_INITIALIZED=true
 }
 
@@ -86,8 +87,10 @@ run_network_audit() {
     local interfaces_count=0
     local listening_count=0
     local established_count=0
-    local firewall_enabled=false
     local firewall_backend="unknown"
+    local firewall_service_enabled=false
+    local firewall_service_active=false
+    local firewall_rules_active=false
 
     section_start_ms=$(now_ms)
     section_header "🔌 Active Network Interfaces"
@@ -151,8 +154,18 @@ run_network_audit() {
     report_append "|---------|-----|------|"
     local listening_items=""
     if command -v ss >/dev/null 2>&1; then
+        local ss_out
+        ss_out="$(soft_out_probe "network.ss_listen" ss -H -tlnp 2>/dev/null)"
+        if [ -z "$ss_out" ]; then
+            ss_out="$(soft_out_probe "network.ss_listen_no_header_fallback" ss -tlnp 2>/dev/null | awk 'NR>1')"
+        fi
+        if [ -z "$ss_out" ]; then
+            ss_out="$(soft_out_probe "network.ss_listen_no_process" ss -H -tln 2>/dev/null)"
+        fi
         while IFS=$'\t' read -r pname pid port; do
             [ -n "$port" ] || continue
+            pname="${pname:-unknown}"
+            pid="${pid:-0}"
             report_append "| \`$pname\` | $pid | $port |"
             item="{\"process\":$(json_escape "$pname"),\"pid\":${pid:-0},\"port\":${port:-0}}"
             if [ -z "$listening_items" ]; then
@@ -161,12 +174,7 @@ run_network_audit() {
                 listening_items="${listening_items},${item}"
             fi
             listening_count=$((listening_count + 1))
-        done < <(soft_out_probe "network.ss_listen" ss -tlnp 2>/dev/null | awk 'NR>1 {
-            port=$4; sub(/.*:/,"",port)
-            proc=$7; gsub(/.*users:\(\("/,"",proc); gsub(/".*/,"",proc)
-            pid=$7; gsub(/.*pid=/,"",pid); gsub(/,.*/,"",pid)
-            if (port ~ /^[0-9]+$/) printf "%s\t%s\t%s\n", proc, pid, port
-        }' | sed -n '1,20p')
+        done < <(printf '%s\n' "$ss_out" | parse_ss_listening_tcp | sed -n '1,20p')
     fi
     if (( listening_count == 0 )); then
         report_append "_No listening TCP ports discovered (or probe unavailable)._"
@@ -185,7 +193,7 @@ run_network_audit() {
             [ -n "$dns" ] || continue
             report_append "- \`$dns\`"
             dns_count=$((dns_count + 1))
-        done < <(soft_out_probe "network.resolvectl_dns" resolvectl dns 2>/dev/null | awk '{for(i=2;i<=NF;i++) print $i}' | sort -u || true)
+        done < <(soft_out_probe "network.resolvectl_dns" resolvectl dns 2>/dev/null | filter_dns_server_tokens | sort -u || true)
     fi
     if (( dns_count == 0 )) && [ -f /etc/resolv.conf ]; then
         while IFS= read -r dns; do
@@ -202,37 +210,16 @@ run_network_audit() {
 
     section_start_ms=$(now_ms)
     section_header "🧱 Firewall Status"
-    if command -v ufw >/dev/null 2>&1; then
-        ufw_out="$(soft_out_probe "network.ufw_status" ufw status 2>/dev/null)"
-        if echo "$ufw_out" | grep -qi "active"; then
-            firewall_enabled=true
-            firewall_backend="ufw"
-        fi
-    fi
-    if [ "$firewall_backend" = "unknown" ] && command -v firewall-cmd >/dev/null 2>&1; then
-        fw_state="$(soft_out_probe "network.firewalld_state" firewall-cmd --state 2>/dev/null)"
-        if echo "$fw_state" | grep -qi "running"; then
-            firewall_enabled=true
-            firewall_backend="firewalld"
-        fi
-    fi
-    if [ "$firewall_backend" = "unknown" ] && command -v nft >/dev/null 2>&1; then
-        nft_out="$(soft_out_probe "network.nft_list" nft list ruleset 2>/dev/null)"
-        if [ -n "$nft_out" ]; then
-            firewall_enabled=true
-            firewall_backend="nftables"
-        fi
-    fi
-    if [ "$firewall_backend" = "unknown" ] && command -v iptables >/dev/null 2>&1; then
-        ipt_rules="$(soft_out_probe "network.iptables_list" iptables -L -n 2>/dev/null | awk 'NR>2 {c++} END{print c+0}')"
-        if [ "${ipt_rules:-0}" -gt 0 ] 2>/dev/null; then
-            firewall_enabled=true
-            firewall_backend="iptables"
-        fi
-    fi
-    report_append "- Firewall enabled: **$firewall_enabled**"
+    detect_linux_firewall_status "network"
+    firewall_backend="$FIREWALL_BACKEND"
+    firewall_service_enabled="$FIREWALL_SERVICE_ENABLED"
+    firewall_service_active="$FIREWALL_SERVICE_ACTIVE"
+    firewall_rules_active="$FIREWALL_RULES_ACTIVE"
+    report_append "- Firewall service enabled: **$firewall_service_enabled**"
+    report_append "- Firewall service active: **$firewall_service_active**"
+    report_append "- Firewall rules active: **$firewall_rules_active**"
     report_append "- Firewall backend: **$firewall_backend**"
-    append_ndjson_line "{\"type\":\"firewall_status\",\"run_id\":$(json_escape "$RUN_ID"),\"enabled\":$firewall_enabled,\"backend\":$(json_escape "$firewall_backend")}"
+    append_ndjson_line "{\"type\":\"firewall_status\",\"run_id\":$(json_escape "$RUN_ID"),\"enabled\":$firewall_rules_active,\"service_enabled\":$firewall_service_enabled,\"service_active\":$firewall_service_active,\"rules_active\":$firewall_rules_active,\"backend\":$(json_escape "$firewall_backend"),\"backends\":$(json_escape "${FIREWALL_BACKENDS:-}")}"
     section_end_ms=$(now_ms)
     emit_timing "firewall_status" "$section_start_ms" "$section_end_ms"
 

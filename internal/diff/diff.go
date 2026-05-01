@@ -47,6 +47,7 @@ func Run(baselineRows, currentRows []Row, ndjson bool, quiet bool) (hasDeltas bo
 	hasDeltas = emitCountDelta(baseByType["counts"], currByType["counts"], ndjson) || hasDeltas
 	hasDeltas = emitSecurityConfigDelta(baseByType["security_config"], currByType["security_config"], ndjson) || hasDeltas
 	hasDeltas = emitHomebrewDelta(baseByType["homebrew_summary"], currByType["homebrew_summary"], ndjson) || hasDeltas
+	hasDeltas = emitRunContextDelta(baseByType["run_context"], currByType["run_context"], ndjson) || hasDeltas
 
 	baseWarnings := CollectWarningCodes(baselineRows)
 	currWarnings := CollectWarningCodes(currentRows)
@@ -280,10 +281,10 @@ func probeSortKey(probe, status string) (int, int, string) {
 }
 
 type probeEntry struct {
-	status  string
-	probe   string
-	baseIt  Row
-	currIt  Row
+	status string
+	probe  string
+	baseIt Row
+	currIt Row
 }
 
 func buildProbeFailureEntries(basePF, currPF Row) []probeEntry {
@@ -541,7 +542,7 @@ func emitCountDelta(baseCounts, currCounts Row, ndjson bool) bool {
 }
 
 func emitSecurityConfigDelta(baseSec, currSec Row, ndjson bool) bool {
-	secFields := []string{"filevault", "sip", "gatekeeper", "firewall"}
+	secFields := []string{"filevault", "sip", "gatekeeper", "firewall", "firewall_service_enabled", "firewall_service_active", "firewall_rules_active"}
 	if baseSec == nil || currSec == nil {
 		return false
 	}
@@ -646,6 +647,48 @@ func emitHomebrewDelta(baseBrew, currBrew Row, ndjson bool) bool {
 				sign = "+"
 			}
 			fmt.Printf("  %s: %d → %d (%s%d)\n", d.field, d.b, d.c, sign, d.delta)
+		}
+		fmt.Println()
+	}
+	return true
+}
+
+func emitRunContextDelta(baseCtx, currCtx Row, ndjson bool) bool {
+	if baseCtx == nil || currCtx == nil {
+		return false
+	}
+	fields := []string{"sandbox", "container", "virt", "interactive", "euid", "user", "systemd_available"}
+	var changes []struct {
+		field string
+		b, c  any
+	}
+	for _, f := range fields {
+		b, c := baseCtx[f], currCtx[f]
+		if b == nil || c == nil {
+			continue
+		}
+		if fmt.Sprint(b) != fmt.Sprint(c) {
+			changes = append(changes, struct {
+				field string
+				b, c  any
+			}{f, b, c})
+		}
+	}
+	if len(changes) == 0 {
+		return false
+	}
+	if ndjson {
+		for _, ch := range changes {
+			emitDiffRow("run_context", map[string]any{
+				"field":    ch.field,
+				"baseline": ch.b,
+				"current":  ch.c,
+			})
+		}
+	} else {
+		fmt.Println("## Run context changes")
+		for _, ch := range changes {
+			fmt.Printf("  %s: %v → %v\n", ch.field, ch.b, ch.c)
 		}
 		fmt.Println()
 	}

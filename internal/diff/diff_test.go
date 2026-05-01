@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -192,6 +193,36 @@ func TestRun_NDJSON(t *testing.T) {
 	}
 	if !foundConfigFdesetup {
 		t.Error("expected at least one probe_failure row with status=new and probe=config.fdesetup_status")
+	}
+}
+
+func TestRun_RunContextDelta(t *testing.T) {
+	baselineRows := []Row{
+		{"type": "run_context", "run_id": "base", "sandbox": "container", "container": true, "virt": "docker", "interactive": false, "euid": 1000.0, "user": "kareem", "systemd_available": false},
+	}
+	currentRows := []Row{
+		{"type": "run_context", "run_id": "curr", "sandbox": "host", "container": false, "virt": "none", "interactive": true, "euid": 1000.0, "user": "kareem", "systemd_available": true},
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	hasDeltas, _ := Run(baselineRows, currentRows, false, false)
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	out := buf.String()
+
+	if !hasDeltas {
+		t.Fatal("Run with changed run_context must return true")
+	}
+	for _, want := range []string{"## Run context changes", "sandbox: container", "container: true", "systemd_available: false"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("run context output missing %q:\n%s", want, out)
+		}
 	}
 }
 

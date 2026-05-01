@@ -199,6 +199,7 @@ if [ -n "$NDJSON_FILE" ]; then
         scan_mode="deep"
     fi
     append_ndjson_line "{\"type\":\"meta\",\"run_id\":$(json_escape "$RUN_ID"),\"schema_version\":\"0.1\",\"tool_name\":\"operating-system-audit\",\"tool_component\":\"full-audit\",\"timestamp\":$(json_escape "$ISO_TIMESTAMP"),\"hostname\":$(json_escape "$HOSTNAME_VAL"),\"user\":$(json_escape "$CURRENT_USER"),\"os_version\":$(json_escape "$OS_VERSION"),\"kernel\":$(json_escape "$KERNEL_INFO"),\"path\":$(json_escape "$(get_audit_path_for_output)")}"
+    emit_run_context
     append_ndjson_line "{\"type\":\"scan\",\"run_id\":$(json_escape "$RUN_ID"),\"mode\":$(json_escape "$scan_mode"),\"threshold_mb\":$LARGE_FILE_THRESHOLD_MB,\"old_days\":$OLD_FILE_DAYS,\"redact_paths\":$([ "$REDACT_PATHS" = true ] && echo true || echo false)}"
     STORAGE_NDJSON_INITIALIZED=true
 fi
@@ -246,20 +247,23 @@ if [ -n "$NDJSON_FILE" ]; then
     echo -e "NDJSON summary saved to:"
     echo -e "  ${CYAN}$NDJSON_FILE${NC}"
 fi
+probe_warning_details_emitted=false
+if emit_probe_failure_warning_details "$PROBE_FAILURES_FILE"; then
+    probe_warning_details_emitted=true
+fi
 emit_probe_failures_summary
 soft_failures=0
 if [ -f "$SOFT_FAILURE_LOG" ]; then
     soft_failures=$(wc -l < "$SOFT_FAILURE_LOG" | tr -d ' ' || true)
     soft_failures=${soft_failures:-0}
 fi
-rm -f "$SOFT_FAILURE_LOG" "$TOP_NODE_MODULES_FILE" "$TOP_DOCUMENTS_FOLDERS_FILE" "$TOP_PATHS_FILE" || true
-if (( soft_failures > 0 )); then
+if (( soft_failures > 0 )) && [ "$probe_warning_details_emitted" != true ]; then
     echo -e "Soft probe warnings encountered: ${YELLOW}$soft_failures${NC}"
-    report_append "- **Soft probe warnings:** $soft_failures"
-    if [ -n "$NDJSON_FILE" ]; then
-        append_ndjson_line "{\"type\":\"warning\",\"run_id\":$(json_escape "$RUN_ID"),\"soft_failures\":${soft_failures:-0}}"
-    fi
+    emit_soft_failure_warning_details "$SOFT_FAILURE_LOG" || true
+elif [ "$probe_warning_details_emitted" = true ]; then
+    echo -e "Soft probe warnings encountered: ${YELLOW}see report details${NC}"
 fi
+rm -f "$SOFT_FAILURE_LOG" "$TOP_NODE_MODULES_FILE" "$TOP_DOCUMENTS_FOLDERS_FILE" "$TOP_PATHS_FILE" || true
 echo ""
 xdg-open "$REPORT_FILE" 2>/dev/null || echo "Open: $REPORT_FILE"
 echo ""
