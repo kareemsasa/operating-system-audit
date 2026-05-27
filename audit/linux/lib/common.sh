@@ -471,7 +471,16 @@ emit_soft_failure_warning_details() {
     soft_failures=${soft_failures:-0}
     (( soft_failures > 0 )) || return 1
 
-    report_append "- **Soft probe warnings:** $soft_failures"
+    # Count unique warning groups to detect truncation
+    local unique_groups
+    unique_groups=$(sort "$log_file" | uniq -c | wc -l | tr -d ' ' || true)
+    unique_groups=${unique_groups:-0}
+
+    if (( unique_groups > max_items )); then
+        report_append "- **Soft probe warnings:** $soft_failures (showing top $max_items)"
+    else
+        report_append "- **Soft probe warnings:** $soft_failures"
+    fi
     report_append ""
     report_append "### Soft Probe Warning Details"
 

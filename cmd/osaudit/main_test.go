@@ -683,6 +683,88 @@ func TestLinuxProbeFailureWarningDetailsUseSummarySource(t *testing.T) {
 	}
 }
 
+func TestSoftFailureWarningDetailsTruncation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash helper test requires a Unix shell")
+	}
+	cwd, _ := os.Getwd()
+	for d := cwd; d != ""; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			cwd = d
+			break
+		}
+	}
+
+	commonPath := filepath.Join(cwd, "audit", "linux", "lib", "common.sh")
+
+	tests := []struct {
+		name         string
+		uniqueProbes int
+		wantTrunc    bool // expect "(showing top 10)" in report
+	}{
+		{"no_truncation_5_warnings", 5, false},
+		{"truncation_12_warnings", 12, true},
+		{"exact_boundary_10_warnings", 10, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			reportPath := filepath.Join(tmp, "report.md")
+			ndjsonPath := filepath.Join(tmp, "out.ndjson")
+			softLogPath := filepath.Join(tmp, "soft.log")
+
+			var logContent strings.Builder
+			for i := 0; i < tt.uniqueProbes; i++ {
+				logContent.WriteString("soft_probe:probe_" + strconv.Itoa(i) + ":cmd\n")
+			}
+			if err := os.WriteFile(softLogPath, []byte(logContent.String()), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("bash", "-c",
+				`source "$1"; : > "$REPORT_FILE"; : > "$NDJSON_FILE"; emit_soft_failure_warning_details "$SOFT_FAILURE_LOG"`,
+				"bash", commonPath)
+			cmd.Dir = cwd
+			cmd.Env = append(os.Environ(),
+				"AUDIT_INIT_LOADED=1",
+				"NO_COLOR=true",
+				"NDJSON_FILE="+ndjsonPath,
+				"RUN_ID=test-run",
+				"REPORT_FILE="+reportPath,
+				"SOFT_FAILURE_LOG="+softLogPath,
+				"REDACT_PATHS=false",
+				"REDACT_ALL=false",
+				"HOME_DIR=/home/test",
+				"CURRENT_USER=test",
+				"HOSTNAME_VAL=test-host",
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("emit_soft_failure_warning_details failed: %v\n%s", err, out)
+			}
+
+			report, err := os.ReadFile(reportPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reportStr := string(report)
+
+			hasTrunc := strings.Contains(reportStr, "(showing top 10)")
+			if tt.wantTrunc && !hasTrunc {
+				t.Errorf("expected truncation note in report, got:\n%s", reportStr)
+			}
+			if !tt.wantTrunc && hasTrunc {
+				t.Errorf("unexpected truncation note in report, got:\n%s", reportStr)
+			}
+
+			// Verify the total count is always present
+			wantCount := "**Soft probe warnings:** " + strconv.Itoa(tt.uniqueProbes)
+			if !strings.Contains(reportStr, wantCount) {
+				t.Errorf("report missing count %q, got:\n%s", wantCount, reportStr)
+			}
+		})
+	}
+}
+
 func buildOSAuditBinary(t *testing.T, root string) string {
 	t.Helper()
 
