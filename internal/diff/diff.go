@@ -29,13 +29,16 @@ func Run(baselineRows, currentRows []Row, ndjson bool, quiet bool) (hasDeltas bo
 		r, w, _ := os.Pipe()
 		old := os.Stdout
 		os.Stdout = w
+		done := make(chan struct{})
 		go func() {
 			io.Copy(&buf, r)
 			r.Close()
+			close(done)
 		}()
 		defer func() {
 			w.Close()
 			os.Stdout = old
+			<-done
 			capturedOutput = buf.Bytes()
 		}()
 	}

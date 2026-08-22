@@ -232,3 +232,29 @@ func copyRow(r Row) Row {
 	json.Unmarshal(data, &out)
 	return out
 }
+
+func TestRun_QuietCapturesDeltaOutput(t *testing.T) {
+	base := filepath.Join("..", "..", "tests", "fixtures", "probe_diff_baseline.ndjson")
+	curr := filepath.Join("..", "..", "tests", "fixtures", "probe_diff_current.ndjson")
+
+	baselineRows, err := ReadNDJSON(base)
+	if err != nil {
+		t.Fatalf("ReadNDJSON(baseline): %v", err)
+	}
+	currentRows, err := ReadNDJSON(curr)
+	if err != nil {
+		t.Fatalf("ReadNDJSON(current): %v", err)
+	}
+
+	hasDeltas, captured := Run(baselineRows, currentRows, false, true)
+
+	if !hasDeltas {
+		t.Fatal("Run with fixture data must return true (changes exist)")
+	}
+	if len(captured) == 0 {
+		t.Fatal("quiet Run with deltas must return captured output")
+	}
+	if !bytes.Contains(captured, []byte("## Probe failures delta")) {
+		t.Error("captured output must contain '## Probe failures delta'")
+	}
+}
